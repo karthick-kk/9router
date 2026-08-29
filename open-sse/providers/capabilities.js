@@ -534,7 +534,20 @@ function isCommandCodeTextOnly(model) {
   }
   return false;
 }
-export function getCapabilitiesForModel(provider, model) {
+
+// Explicit context-window suffix — a model id like "...-1M" / "...-2M" (also
+// OpenRouter-style ":1m" / "[1m]") declares its own window. The generic family
+// patterns below would otherwise size it to the base model, e.g. a 1M Qwen
+// variant reported as 262144. The suffix is authoritative for the window but
+// never shrinks a window a hand-curated entry already set higher.
+const CONTEXT_SUFFIX_RE = /[-:[](\d+)[Mm](?:\]|$)/;
+function contextWindowFromSuffix(model) {
+  if (typeof model !== "string") return null;
+  const m = model.match(CONTEXT_SUFFIX_RE);
+  return m ? Number(m[1]) * 1000000 : null;
+}
+
+function resolveModelCapabilities(provider, model) {
   if (!model) return { ...DEFAULT_CAPABILITIES };
 
   // Canonical exact lookup strips vendor prefix: "anthropic/claude-opus-4.7" -> "claude-opus-4.7".
@@ -577,4 +590,15 @@ export function getCapabilitiesForModel(provider, model) {
 
   // 4. Floor
   return refine(null, provider, model);
+}
+
+export function getCapabilitiesForModel(provider, model) {
+  const caps = resolveModelCapabilities(provider, model);
+  const suffixWindow = contextWindowFromSuffix(model);
+  // The id's own "-1M"/":1m" suffix wins over pattern defaults, but never
+  // lowers a window a hand-curated entry already declared higher.
+  if (suffixWindow && suffixWindow > caps.contextWindow) {
+    return { ...caps, contextWindow: suffixWindow };
+  }
+  return caps;
 }

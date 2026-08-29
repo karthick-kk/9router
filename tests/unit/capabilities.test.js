@@ -113,4 +113,21 @@ describe("getCapabilitiesForModel", () => {
       thinkingEffortSupported: true,
     });
   });
+
+  it("honors an explicit context-window suffix over the family pattern default", () => {
+    // *qwen* catch-all pattern resolves to 262144; the -1M suffix declares 1M.
+    expect(getCapabilitiesForModel("9eric", "Qwen3.8-27B-FP8").contextWindow).toBe(262144);
+    expect(getCapabilitiesForModel("9eric", "Qwen3.8-27B-FP8-1M").contextWindow).toBe(1000000);
+    expect(getCapabilitiesForModel("9eric", "Qwen3.8-27B-FP8-2M").contextWindow).toBe(2000000);
+    // Vendor prefix doesn't change the resolution.
+    expect(getCapabilitiesForModel("9eric", "Qwen/Qwen3.8-27B-FP8-1M").contextWindow).toBe(1000000);
+    // OpenRouter-style suffix forms.
+    expect(getCapabilitiesForModel("9eric", "Qwen3.8-27B-FP8:1m").contextWindow).toBe(1000000);
+    expect(getCapabilitiesForModel("9eric", "Qwen3.8-27B-FP8[1m]").contextWindow).toBe(1000000);
+  });
+
+  it("never shrinks a window a resolved entry already declares higher", () => {
+    // gemini-3 family resolves to 1048576 — a "-1M" (1,000,000) suffix must not lower it.
+    expect(getCapabilitiesForModel("google", "gemini-3-flash-1M").contextWindow).toBe(1048576);
+  });
 });
