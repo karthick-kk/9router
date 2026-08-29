@@ -1,10 +1,25 @@
 services:
   9router:
-    build: .
+    build:
+      context: .
+      args:
+        # glibc base required — tailscaled has no musl/alpine build
+        NODE_IMAGE: node:22
     container_name: 9router
     restart: always
-    ports:
-      - "20128:20128"
+    # host networking: the dashboard's Tailscale/tunnel endpoints are gated to
+    # loopback peers (LOCAL_ONLY_PATHS). With bridge port-mapping the browser's
+    # request arrives from 172.17.0.1 and gets 403'd, so the UI falls back to
+    # "Tailscale is not installed". Host mode makes the host browser a loopback peer.
+    network_mode: host
+    # host's systemd-resolved stub (127.0.0.53) — it's hooked into tailscaled,
+    # so tailnet-scoped names (e.g. 9router.taila00627.ts.net) resolve. Docker's
+    # global DNS override (1.1.1.1/8.8.8.8) alone only knows public names.
+    # Fallback: 100.100.100.100 (Tailscale DNS) if you prefer it.
+    dns:
+      - 127.0.0.53
+    cap_add:
+      - NET_ADMIN   # TUN mode for reliable Funnel TLS
     volumes:
       - 9router-data:/app/data
     env_file:
@@ -14,11 +29,9 @@ services:
       PORT: "20128"
       HOSTNAME: "0.0.0.0"
       NODE_ENV: production
-      # HEADROOM_URL: http://headroom:8787   # uncomment to route 9router through headroom
+      # HEADROOM_URL: http://headroom:8787   # unreachable in host mode (no compose DNS)
     # depends_on:
     #   - headroom
-    networks:
-      - default
 
   # Headroom LLM context-compression proxy.
   # Consumed by the @baggiiiie/pi-headroom Pi extension on the host at

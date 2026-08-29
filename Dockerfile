@@ -7,7 +7,14 @@ RUN sed -i 's|dl-cdn.alpinelinux.org|mirrors.aliyun.com|g' /etc/apk/repositories
 
 FROM base AS builder
 
-RUN apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers
+# glibc base (NODE_IMAGE=node:22) uses apt; default alpine uses apk
+RUN if command -v apk >/dev/null 2>&1; then \
+      apk --no-cache upgrade && apk --no-cache add python3 make g++ linux-headers; \
+    else \
+      apt-get update && \
+      apt-get install -y --no-install-recommends python3 make g++ && \
+      apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    fi
 
 COPY package.json ./
 RUN npm install --registry=https://registry.npmmirror.com
@@ -48,9 +55,24 @@ RUN mkdir -p /app/data && chown -R node:node /app && \
   mkdir -p /app/data-home && chown node:node /app/data-home && \
   ln -sf /app/data-home /root/.9router 2>/dev/null || true
 
+# Tailscale (Funnel): glibc base only (no musl build) — compose sets NODE_IMAGE=node:22.
+# procps provides pgrep/pkill which the app uses to detect/reuse the daemon.
+# policy-rc.d stub prevents the .deb postinst from trying to start services at build time.
+RUN if command -v apk >/dev/null 2>&1; then \
+      apk --no-cache upgrade && apk --no-cache add su-exec; \
+    else \
+      apt-get update && \
+      apt-get install -y --no-install-recommends curl procps && \
+      printf 'exit 101\n' > /usr/sbin/policy-rc.d && \
+      curl -fsSL https://tailscale.com/install.sh | sh && \
+      rm -f /usr/sbin/policy-rc.d && \
+      apt-get clean && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 # Fix permissions at runtime (handles mounted volumes)
-RUN apk --no-cache upgrade && apk --no-cache add su-exec && \
-  printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nexec su-exec node "$@"\n' > /entrypoint.sh && \
+# Privilege drop: su-exec on alpine, setpriv on glibc (util-linux, present in the debian node image)
+# userspace networking: no /dev/net/tun needed (often unavailable in Docker); the app detects and reuses this daemon
+RUN printf '#!/bin/sh\nchown -R node:node /app/data /app/data-home 2>/dev/null\nif command -v tailscaled >/dev/null; then\n  mkdir -p /app/data/tailscale\n  tailscaled --socket=/app/data/tailscale/tailscaled.sock --statedir=/app/data/tailscale --tun=userspace-networking >/app/data/tailscale/daemon.log 2>&1 &\n  sleep 3\n  chown -R node:node /app/data/tailscale 2>/dev/null\nfi\nif command -v su-exec >/dev/null 2>&1; then exec su-exec "$@"; else exec setpriv --reuid=node --regid=node --init-groups "$@"; fi\n' > /entrypoint.sh && \
   chmod +x /entrypoint.sh
 
 EXPOSE 20128
