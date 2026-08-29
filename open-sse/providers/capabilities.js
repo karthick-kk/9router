@@ -115,6 +115,10 @@ export const MODEL_CAPABILITIES = {
 
   // DeepSeek's first V4 model with image input; text limits match V4-Flash.
   "deepseek-v4-flash-vision-exp": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
+  // Dated -0731 snapshot served on the EricAI tailnet node: 262k window, NOT
+  // the 1M the *deepseek-v4* family pattern assumes. Exact entry so the
+  // pattern can't over-report it to /v1/models and clients.
+  "DeepSeek-V4-Flash-0731": { reasoning: true, thinkingFormat: "deepseek", contextWindow: 262144, maxOutput: 384000 },
 
   // DeepSeek V4.1-Flash is natively multimodal — models.dev lists
   // opencode-go/deepseek-v4.1-flash with modalities.input ["text","image"] — and upstream

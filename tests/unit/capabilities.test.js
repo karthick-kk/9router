@@ -130,4 +130,10 @@ describe("getCapabilitiesForModel", () => {
     // gemini-3 family resolves to 1048576 — a "-1M" (1,000,000) suffix must not lower it.
     expect(getCapabilitiesForModel("google", "gemini-3-flash-1M").contextWindow).toBe(1048576);
   });
+
+  it("sizes the dated DeepSeek-V4-Flash-0731 snapshot to 262k, not the 1M family default", () => {
+    expect(getCapabilitiesForModel("9eric", "deepseek-ai/DeepSeek-V4-Flash-0731").contextWindow).toBe(262144);
+    // The undated V4-Flash family stays at the 1M the pattern declares.
+    expect(getCapabilitiesForModel("9eric", "deepseek-ai/DeepSeek-V4-Flash").contextWindow).toBe(1000000);
+  });
 });
