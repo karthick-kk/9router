@@ -1,6 +1,6 @@
 services:
   9router:
-    image: decolua/9router:latest
+    build: .
     container_name: 9router
     restart: always
     ports:
@@ -14,17 +14,59 @@ services:
       PORT: "20128"
       HOSTNAME: "0.0.0.0"
       NODE_ENV: production
-      HEADROOM_URL: http://headroom:8787
-    depends_on:
-      - headroom
+      # HEADROOM_URL: http://headroom:8787   # uncomment to route 9router through headroom
+    # depends_on:
+    #   - headroom
+    networks:
+      - default
 
+  # Headroom LLM context-compression proxy.
+  # Consumed by the @baggiiiie/pi-headroom Pi extension on the host at
+  # http://127.0.0.1:8788. Inside this compose network the hostname is
+  # `headroom` and the port is the upstream default 8787; the host-side
+  # port mapping below re-exposes it as 8788 to match the extension's
+  # PI_HEADROOM_URL default.
+  #
+  # Flags (matches what the extension expects on /v1/compress):
+  #   --no-ccr   disables Cache-Compress-Retrieve markers (the extension
+  #              does not register a retrieve tool, so CCR markers would
+  #              leak unhandled hints into model context)
+  #
+  # Image: ghcr.io/headroomlabs-ai/headroom (built from the official repo
+  # at github.com/chopratejas/headroom). The `slim` variant is the
+  # distroless runtime stage; `nonroot` runs as uid 1000.
   headroom:
-    image: ghcr.io/chopratejas/headroom:latest
+    image: ghcr.io/headroomlabs-ai/headroom:slim-nonroot
     container_name: headroom
     restart: always
+    pull_policy: always
+    command:
+      - --host=0.0.0.0
+      - --port=8787
+      - --no-ccr
     ports:
-      - "8787:8787"
+      - "8788:8787"
+    volumes:
+      - headroom-data:/home/nonroot/.headroom
+    environment:
+      HEADROOM_HOST: 0.0.0.0
+      # Allow the @baggiiiie/pi-headroom Pi extension (running on the host
+      # and reaching us via the docker port mapping) to hit POST /v1/compress.
+      # The endpoint is loopback-gated by default; this env var opts in to
+      # remote callers. Safe because the endpoint runs compression locally
+      # and never forwards to an LLM.
+      HEADROOM_COMPRESS_ALLOW_REMOTE: "true"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/readyz', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    networks:
+      - default
 
 volumes:
   9router-data:
     name: 9router-data
+  headroom-data:
+    name: headroom-data
