@@ -31,10 +31,52 @@ import { resolveSessionIdentity } from "open-sse/utils/sessionManager.js";
  * requests of a tool loop, so it keys on the same conversation-stable id the
  * providers use for prompt caching. `scope` keeps combo state separate from a
  * provider's own session store.
+ *
+ * A client that sends no session id of any kind gets an unstable id on its very
+ * first turn (there is no assistant text to hash yet). That degrades safely: a
+ * fresh state starts on the capable tier, and the first turn is classified
+ * regardless of stored state. From the second turn on, the accumulated assistant
+ * text stabilizes the id. Claude Code and the other agent CLIs send a session
+ * header, so they are stable from turn one.
  */
 function comboSessionId(request, body) {
   const headers = request?.headers ? Object.fromEntries(request.headers.entries()) : null;
   return resolveSessionIdentity({ headers, body, scope: "combo" }).sessionId;
+}
+
+/**
+ * Dispatch a composite-stage combo. Shared by both combo entry points (a combo named
+ * directly, and one resolved later inside handleSingleModelChat) so the two cannot
+ * drift — they already had: only one of them tagged usage with the combo name, which
+ * silently lost attribution for requests arriving through the other.
+ *
+ * `combo`/`comboStrategy` ride on clientRawRequest because that object already flows
+ * down to usage recording, so no handler signature has to change.
+ */
+function dispatchCompositeStage({ body, modelStr, models, comboStrategies, clientRawRequest, request, apiKey }) {
+  log.info("CHAT", `Combo "${modelStr}" with ${models.length} models (strategy: composite-stage)`);
+  const compositeRawReq = clientRawRequest
+    ? { ...clientRawRequest, combo: modelStr, comboStrategy: "composite-stage" }
+    : null;
+
+  return handleCompositeStageChat({
+    body,
+    models,
+    handleSingleModel: (b, m, isClassifier) => {
+      let rawReq = compositeRawReq;
+      // The classifier is a side request, not the user's turn: strip its tools from
+      // the logged raw request, the same way fusion treats a panel call.
+      if (isClassifier && compositeRawReq) {
+        const { tools, tool_choice, ...cleanBody } = compositeRawReq.body || {};
+        rawReq = { ...compositeRawReq, body: cleanBody };
+      }
+      return handleSingleModelChat(b, m, rawReq, request, apiKey);
+    },
+    log,
+    comboName: modelStr,
+    sessionId: comboSessionId(request, body),
+    config: comboStrategies[modelStr]?.composite,
+  });
 }
 
 /**
@@ -135,29 +177,9 @@ export async function handleChat(request, clientRawRequest = null) {
     }
 
     if (comboStrategy === "composite-stage") {
-      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: composite-stage)`);
-      return handleCompositeStageChat({
-        body,
-        models: comboModels,
-        // The classifier is a side request, not the user's turn: strip its tools from
-        // the logged raw request, the same way fusion treats a panel call.
-        // Inject combo name into clientRawRequest so usage tracking can attribute
-        // costs to the composite strategy (for efficiency measurement).
-        handleSingleModel: (b, m, isClassifier) => {
-          const compositeRawReq = clientRawRequest
-            ? { ...clientRawRequest, combo: modelStr, comboStrategy: "composite-stage" }
-            : null;
-          let cleanRawReq = compositeRawReq;
-          if (isClassifier && compositeRawReq) {
-            const { tools, tool_choice, ...cleanBody } = compositeRawReq.body || {};
-            cleanRawReq = { ...compositeRawReq, body: cleanBody };
-          }
-          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
-        },
-        log,
-        comboName: modelStr,
-        sessionId: comboSessionId(request, body),
-        config: comboStrategies[modelStr]?.composite,
+      return dispatchCompositeStage({
+        body, modelStr, models: comboModels, comboStrategies,
+        clientRawRequest, request, apiKey,
       });
     }
 
@@ -239,22 +261,9 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
 
       if (comboStrategy === "composite-stage") {
-        log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: composite-stage)`);
-        return handleCompositeStageChat({
-          body,
-          models: comboModels,
-          handleSingleModel: (b, m, isClassifier) => {
-            let cleanRawReq = clientRawRequest;
-            if (isClassifier && clientRawRequest) {
-              const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
-              cleanRawReq = { ...clientRawRequest, body: cleanBody };
-            }
-            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
-          },
-          log,
-          comboName: modelStr,
-          sessionId: comboSessionId(request, body),
-          config: comboStrategies[modelStr]?.composite,
+        return dispatchCompositeStage({
+          body, modelStr, models: comboModels, comboStrategies,
+          clientRawRequest, request, apiKey,
         });
       }
 
