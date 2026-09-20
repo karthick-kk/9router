@@ -101,5 +101,15 @@ graphify-out/*
 .start-dev.ps1
 start-dev-silent.cjs
 debug.log
-# Credential record written by the acme-proxy container mount
-acme-authrecord
+# Local memsearch plugin index/state
+.memsearch/
+
+# Local codewhale subagent tool state
+.codewhale/
+
+# Local diagram-design working file
+.diagram-design
+
+# Compose backups / local variants
+docker-compose.yml.bak
+docker-compose_minimal.yml
