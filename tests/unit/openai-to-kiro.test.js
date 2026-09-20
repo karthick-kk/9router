@@ -286,6 +286,68 @@ describe("openaiToKiroRequest", () => {
   });
 
   describe("thinking budget", () => {
+    // Selecting a `-thinking` model is the only thinking signal an OpenAI-shaped
+    // client sends when it has no effort control. The budget came from the model
+    // name alone and never reached the native fields, so thinking fell back to
+    // the `<thinking_mode>` prompt tag, which sonnet ignores.
+    it("enables native thinking from the -thinking suffix with no effort field", () => {
+      const result = openaiToKiroRequest(
+        "claude-sonnet-5-thinking",
+        { messages: [{ role: "user", content: "Think" }] },
+        true,
+        {},
+      );
+
+      expect(result.additionalModelRequestFields).toEqual({
+        thinking: { type: "adaptive", display: "summarized" },
+        output_config: { effort: "medium" },
+      });
+    });
+
+    it("enables native thinking for a bare -thinking-agentic model", () => {
+      const result = openaiToKiroRequest(
+        "claude-sonnet-5-thinking-agentic",
+        { messages: [{ role: "user", content: "Think" }] },
+        true,
+        {},
+      );
+
+      expect(result.additionalModelRequestFields.output_config).toEqual({ effort: "medium" });
+    });
+
+    it("sends no native thinking fields for a base model with no effort field", () => {
+      const result = openaiToKiroRequest(
+        "claude-sonnet-5",
+        { messages: [{ role: "user", content: "Just answer" }] },
+        true,
+        {},
+      );
+
+      expect(result.additionalModelRequestFields).toBeUndefined();
+    });
+
+    it("lets an explicit reasoning_effort win over the -thinking suffix budget", () => {
+      const result = openaiToKiroRequest(
+        "claude-sonnet-5-thinking",
+        { reasoning_effort: "high", messages: [{ role: "user", content: "Think" }] },
+        true,
+        {},
+      );
+
+      expect(result.additionalModelRequestFields.output_config).toEqual({ effort: "high" });
+    });
+
+    it("sends no native fields for a -thinking suffix on a legacy model", () => {
+      const result = openaiToKiroRequest(
+        "claude-sonnet-4.5-thinking",
+        { messages: [{ role: "user", content: "Think" }] },
+        true,
+        {},
+      );
+
+      expect(result.additionalModelRequestFields).toBeUndefined();
+    });
+
     it("maps reasoning_effort low to max_thinking_length 1024", () => {
       const body = {
         reasoning_effort: "low",
