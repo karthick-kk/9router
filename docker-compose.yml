@@ -1,30 +1,100 @@
 services:
-  9router:
-    image: decolua/9router:latest
-    container_name: 9router
+  9router-ts:
+    image: tailscale/tailscale:latest
     restart: always
-    ports:
-      - "20128:20128"
+    hostname: 9router-ts
+    network_mode: host
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - TS_AUTHKEY=${TS_AUTHKEY}
+      - TS_HOSTNAME=9router
+      - TS_STATE_DIR=/var/lib/tailscale
+      - TS_USERSPACE=false
+    volumes:
+      - 9router-ts-state:/var/lib/tailscale
+
+  9router:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: always
+    network_mode: host
+    extra_hosts:
+      - "host.docker.internal:127.0.0.1"
     volumes:
       - 9router-data:/app/data
-    env_file:
-      - .env
     environment:
       DATA_DIR: /app/data
       PORT: "20128"
       HOSTNAME: "0.0.0.0"
       NODE_ENV: production
-      HEADROOM_URL: http://headroom:8787
+      HEADROOM_URL: http://host.docker.internal:8788
+      SEARXNG_URL: http://127.0.0.1:8080/search
+      STREAM_STALL_TIMEOUT_MS: "120000"
+      QDRANT_URL: http://127.0.0.1:6333
     depends_on:
-      - headroom
+      9router-ts:
+        condition: service_started
+      ericaiproxy:
+        condition: service_started
 
   headroom:
-    image: ghcr.io/chopratejas/headroom:latest
+    image: ghcr.io/headroomlabs-ai/headroom:latest
     container_name: headroom
     restart: always
-    ports:
-      - "8787:8787"
+    pull_policy: always
+    command:
+      - --host=0.0.0.0
+      - --port=8788
+      - --no-ccr
+    volumes:
+      - headroom-data:/home/nonroot/.headroom
+    environment:
+      HEADROOM_HOST: 0.0.0.0
+      HEADROOM_COMPRESS_ALLOW_REMOTE: "true"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python3",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8788/readyz', timeout=5)",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+    network_mode: host
+
+  ericaiproxy:
+    build:
+      context: ${ERICAI_PROXY_DIR:-../ericai-client}
+      dockerfile_inline: |
+        FROM python:3.13-slim
+        WORKDIR /app
+        COPY . /app
+        RUN pip install --no-cache-dir -e ".[proxy]" && \
+            python -c "from ericai.cert_trust import create_combined_ca_bundle; create_combined_ca_bundle()"
+        EXPOSE 7999
+        ENTRYPOINT ["python", "-c", "from ericai.ericai_proxy import start_proxy, ProxyArgs; start_proxy(ProxyArgs(host='0.0.0.0', port=7999))"]
+    restart: always
+    network_mode: host
+    volumes:
+      - ${HOME}/.IdentityService:/root/.IdentityService
+      - ${HOME}/.ericai_authrecord:/app/.ericai_authrecord
+
+networks:
+  default:
+    driver: none
 
 volumes:
   9router-data:
-    name: 9router-data
+    external: true
+  9router-ts-state:
+    external: true
+  headroom-data:
+    name: headroom-data

@@ -1,0 +1,8 @@
+[Unit]
+Description=Re-assert Tailscale CGNAT exemption in Cloudflare WARP nft rules
+Wants=cloudflare-warp.service
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/warp-cgnat-exempt.sh
