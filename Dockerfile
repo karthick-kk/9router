@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1.7
 ARG NODE_IMAGE=node:22-alpine
 ARG ALPINE_MIRROR=dl-cdn.alpinelinux.org
 ARG NPM_REGISTRY=https://registry.npmjs.org/
