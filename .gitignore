@@ -101,3 +101,5 @@ graphify-out/*
 .start-dev.ps1
 start-dev-silent.cjs
 debug.log
+# Credential record written by the ericaiproxy container mount
+.ericai_authrecord
