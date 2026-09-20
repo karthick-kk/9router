@@ -7,14 +7,26 @@ import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 import { resetRoutingState } from "./combo/session-state.js";
+import { orderAdaptiveModels, recordAttempt } from "./combo/adaptive.js";
 
 // Composite-stage strategy lives in ./combo/ but is re-exported here so callers keep
 // importing every combo strategy from one module.
 export { handleCompositeStageChat } from "./combo/composite-stage.js";
+export { orderAdaptiveModels, recordAttempt, resetAdaptiveState } from "./combo/adaptive.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
 const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
+
+// Adaptive routing: is this failure a rate limit? 429 or provider wording. The
+// penalty it drives decays on its own (adaptive-state), so this only needs to
+// be a reasonable match, not a perfect classifier.
+const RATE_LIMIT_HINTS = ["rate limit", "rate_limit", "ratelimit", "too many requests", "overloaded", "quota"];
+function isRateLimit(status, errorText) {
+  if (status === 429) return true;
+  const t = errorText ? String(errorText).toLowerCase() : "";
+  return RATE_LIMIT_HINTS.some((h) => t.includes(h));
+}
 
 // Prefixes used when flattening tool turns into plain prose for panel models.
 const TOOL_CALL_PREFIX = "[Called tools: ";
@@ -281,11 +293,13 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @param {Function} options.handleSingleModel - Function to handle single model: (body, modelStr) => Promise<Response>
  * @param {Object} options.log - Logger object
  * @param {string} [options.comboName] - Name of the combo (for round-robin tracking)
- * @param {string} [options.comboStrategy] - Strategy: "fallback" or "round-robin"
+ * @param {string} [options.comboStrategy] - Strategy: "fallback", "round-robin" or "adaptive"
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
+ * @param {string|object} [options.adaptivePreset] - Adaptive routing preset ("reliable" |
+ *   "balanced" | "fastest") or a custom {reliability, speed} weight pair
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, adaptivePreset = null }) {
   // Apply rotation strategy if enabled
   let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
 
@@ -300,7 +314,21 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       rotatedModels = reordered;
     }
   }
-  
+
+  // Adaptive: reorder by live model health (reliability × speed, rate-limit
+  // demotion) instead of the configured order. Runs after auto-switch so a
+  // capability-missing model is still floated ahead first — health only ranks
+  // models that can all serve this request. The failover loop below is the
+  // unchanged backstop, so a wrong adaptive order degrades to the old behavior.
+  const adaptiveEnabled = comboStrategy === "adaptive";
+  if (adaptiveEnabled) {
+    const adaptiveOrder = orderAdaptiveModels(rotatedModels, { preset: adaptivePreset });
+    if (adaptiveOrder[0] !== rotatedModels[0]) {
+      log.info("COMBO", `adaptive reorder: ${rotatedModels[0]} → ${adaptiveOrder[0]} (preset: ${typeof adaptivePreset === "string" ? adaptivePreset : "custom"})`);
+    }
+    rotatedModels = adaptiveOrder;
+  }
+
   let lastError = null;
   let earliestRetryAfter = null;
   let lastStatus = null;
@@ -309,11 +337,19 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     const modelStr = rotatedModels[i];
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
+    // Adaptive: observe every attempt so the health cache learns what just
+    // happened. The clock starts here, so latency is time-to-usable-response —
+    // ≈time-to-first-byte for streaming (fetch resolves on headers), total time
+    // otherwise. Measured for failures too, because a slow failure is still a
+    // routing signal (the model was degrading before it stopped working).
+    const attemptStart = Date.now();
+
     try {
       const result = await handleSingleModel(body, modelStr);
-      
+
       // Success (2xx) - return response
       if (result.ok) {
+        if (adaptiveEnabled) recordAttempt(modelStr, true, { latencyMs: Date.now() - attemptStart });
         log.info("COMBO", `Model ${modelStr} succeeded`);
         return result;
       }
@@ -343,6 +379,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       const { shouldFallback, cooldownMs } = checkFallbackError(result.status, errorText);
 
       if (!shouldFallback) {
+        if (adaptiveEnabled) recordAttempt(modelStr, false, { rateLimited: isRateLimit(result.status, errorText) });
         log.warn("COMBO", `Model ${modelStr} failed (no fallback)`, { status: result.status });
         return result;
       }
@@ -359,11 +396,13 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       // Fallback to next model
       lastError = errorText || String(result.status);
       if (!lastStatus) lastStatus = result.status;
+      if (adaptiveEnabled) recordAttempt(modelStr, false, { rateLimited: isRateLimit(result.status, errorText) });
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
       // Catch unexpected exceptions to ensure fallback continues
       lastError = error.message || String(error);
       if (!lastStatus) lastStatus = 500;
+      if (adaptiveEnabled) recordAttempt(modelStr, false);
       log.warn("COMBO", `Model ${modelStr} threw error, trying next`, { error: lastError });
     }
   }
