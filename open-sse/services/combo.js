@@ -14,6 +14,10 @@ import { orderAdaptiveModels, recordAttempt } from "./combo/adaptive.js";
 export { handleCompositeStageChat } from "./combo/composite-stage.js";
 export { orderAdaptiveModels, recordAttempt, resetAdaptiveState } from "./combo/adaptive.js";
 
+// Jev classifier strategy lives in ./combo/ but is re-exported here so callers
+// keep importing every combo strategy from one module.
+export { orderModelsByJev } from "./combo/jev.js";
+
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
 const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);

@@ -15,7 +15,7 @@ import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
-import { handleComboChat, handleFusionChat, handleCompositeStageChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
+import { handleComboChat, handleFusionChat, handleCompositeStageChat, detectRequiredCapabilities, orderModelsByJev } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -153,7 +153,17 @@ export async function handleChat(request, clientRawRequest = null) {
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
-    const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, settings);
+    let routedModels = comboModels;
+    if (comboStrategy === "jev") {
+      routedModels = (await orderModelsByJev({
+        body,
+        models: comboModels,
+        rubrics: comboStrategies[modelStr]?.jevRubrics,
+        cfg: { apiKey: settings.jevApiKey, url: settings.jevUrl, timeoutMs: settings.jevTimeoutMs, confidenceGate: settings.jevConfidenceGate, mode: comboStrategies[modelStr]?.jevMode, lowConfidence: comboStrategies[modelStr]?.jevLowConfidence },
+        log,
+      })) || comboModels;
+    }
+    const augmentedModels = augmentModelsWithCapacityAdapter(routedModels, requiredCapabilities, settings);
     const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
     if (comboStrategy === "fusion") {
@@ -241,7 +251,17 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
       const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
       const requiredCapabilities = detectRequiredCapabilities(body);
-      const augmentedModels = augmentModelsWithCapacityAdapter(comboModels, requiredCapabilities, chatSettings);
+      let routedModels = comboModels;
+      if (comboStrategy === "jev") {
+        routedModels = (await orderModelsByJev({
+          body,
+          models: comboModels,
+          rubrics: comboStrategies[modelStr]?.jevRubrics,
+          cfg: { apiKey: chatSettings.jevApiKey, url: chatSettings.jevUrl, timeoutMs: chatSettings.jevTimeoutMs, confidenceGate: chatSettings.jevConfidenceGate, mode: comboStrategies[modelStr]?.jevMode, lowConfidence: comboStrategies[modelStr]?.jevLowConfidence },
+          log,
+        })) || comboModels;
+      }
+      const augmentedModels = augmentModelsWithCapacityAdapter(routedModels, requiredCapabilities, chatSettings);
       const adapterAdded = augmentedModels.filter((m) => !comboModels.includes(m));
 
       if (comboStrategy === "fusion") {

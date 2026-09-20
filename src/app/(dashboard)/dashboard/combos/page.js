@@ -52,6 +52,7 @@ const STRATEGY_OPTIONS = [
   { value: "adaptive", label: "Adaptive — pick by health" },
   { value: "fusion", label: "Fusion — panel + judge" },
   { value: "composite-stage", label: "Composite — Capable First" },
+  { value: "jev", label: "Jev — classify per request" },
 ];
 
 export default function CombosPage() {
@@ -61,6 +62,7 @@ export default function CombosPage() {
   const [editingCombo, setEditingCombo] = useState(null);
   const [activeProviders, setActiveProviders] = useState([]);
   const [comboStrategies, setComboStrategies] = useState({});
+  const [jevConfigured, setJevConfigured] = useState(true);
   const [capacityAdapter, setCapacityAdapter] = useState(EMPTY_CAPACITY_ADAPTER);
   const { getCaps } = useModelCaps();
   const [confirmState, setConfirmState] = useState(null);
@@ -172,6 +174,7 @@ export default function CombosPage() {
         setActiveProviders(providersData.connections || []);
       }
       setComboStrategies(settingsData.comboStrategies || {});
+      if (typeof settingsData.jevConfigured === "boolean") setJevConfigured(settingsData.jevConfigured);
       const rawAdapter = settingsData.capacityAdapter || {};
       const normalized = {};
       for (const cap of CAPACITY_ADAPTER_CAPS) {
@@ -329,7 +332,7 @@ export default function CombosPage() {
     }
   };
 
-  const handleBulkSetStrategy = async (strategy) => {
+const handleBulkSetStrategy = async (strategy) => {
     if (selectedCombos.length === 0 || !strategy) return;
     setBulkBusy(true);
     try {
@@ -350,6 +353,21 @@ export default function CombosPage() {
       alert("Failed to update strategy for selected combos");
     } finally {
       setBulkBusy(false);
+    }
+  };
+
+  // The TypeSafe key is global (not per-combo); save + flip the configured flag so
+  // every Jev combo re-renders without a full refetch.
+  const handleJevKeySaved = async (apiKey) => {
+    try {
+      await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jevApiKey: apiKey }),
+      });
+      setJevConfigured(true);
+    } catch (error) {
+      console.log("Error saving Jev key:", error);
     }
   };
 
@@ -375,6 +393,7 @@ export default function CombosPage() {
             <li><span className="font-medium text-text-main">Round Robin</span> — rotates models across requests to spread load</li>
             <li><span className="font-medium text-text-main">Fusion</span> — queries all models in parallel, then a judge synthesizes one answer. Best quality, but costs the most: every request bills all panel models + the judge (N+1 calls)</li>
             <li><span className="font-medium text-text-main">Composite — Capable First</span> — starts each task on the capable or efficient model based on a cheap classifier, then follows the agent&apos;s progress: trouble and exploration hold the capable model, routine editing hands off to the efficient one. One model per turn, so it costs no more than a single call</li>
+            <li><span className="font-medium text-text-main">Jev</span> — TypeSafe Jev reads each request and picks the best-fitting model from the combo (~0.5s, fail-open: any classifier failure falls back to normal order)</li>
           </ul>
           <p className="hidden text-xs text-text-muted mt-3 max-w-2xl">
             <span className="font-medium text-text-main">Cursor / Claude Default</span> create combos named exactly like those clients&apos; model IDs (e.g. <code className="font-mono">composer-2.5</code>, <code className="font-mono">opus</code>), seeded with the matching <code className="font-mono">cu/…</code> or <code className="font-mono">cc/…</code> route so traffic can hit 9router without the prefix.
@@ -505,6 +524,8 @@ export default function CombosPage() {
                   onSetStrategy={(patch) => handleSetComboStrategy(combo.name, patch)}
                   selected={selectedIds.includes(combo.id)}
                   onToggleSelect={() => toggleSelect(combo.id)}
+                  jevConfigured={jevConfigured}
+                  onJevKeySaved={handleJevKeySaved}
                 />
               ));
             })()}
@@ -603,7 +624,46 @@ const COMPOSITE_NUMERIC = [
   { key: "downgradeThreshold", label: "Downgrade at", hint: "Stage score at or below which the next turn drops to the efficient model." },
 ];
 
-function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, selected = false, onToggleSelect }) {
+// Inline global TypeSafe key entry, shown on any combo switched to the Jev
+// strategy while no key is configured. Key is saved to settings (PATCH /api/settings),
+// never read back; env TYPESAFE_API_KEY is the engine-side fallback.
+function JevKeyInput({ onSaved }) {
+  const [key, setKey] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const save = async () => {
+    const trimmed = key.trim();
+    if (!trimmed || saving) return;
+    setSaving(true);
+    await onSaved(trimmed);
+    setSaving(false);
+    setSaved(true);
+    setKey("");
+  };
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <input
+        type="password"
+        value={key}
+        onChange={(e) => setKey(e.target.value)}
+        onKeyDown={(e) => e.key === "Enter" && save()}
+        placeholder="tsk_... TypeSafe API key"
+        className="flex-1 px-2 py-1 text-[11px] bg-input border border-border rounded-md outline-none focus:border-primary min-w-0"
+      />
+      <button
+        onClick={save}
+        disabled={!key.trim() || saving}
+        className="px-2 py-1 text-[11px] bg-primary text-white rounded-md disabled:opacity-50 shrink-0"
+      >
+        {saved ? "Saved" : saving ? "Saving..." : "Save"}
+      </button>
+    </div>
+  );
+}
+
+function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, jevConfigured = true, onJevKeySaved, selected = false, onToggleSelect }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
@@ -611,6 +671,12 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
 const comboCaps = aggregateComboCapabilities(combo.models, comboByName);
   const isComposite = current === "composite-stage";
   const isAdaptive = current === "adaptive";
+  const isJev = current === "jev";
+  const jevRubrics = strategy.jevRubrics || {};
+  const jevMode = strategy.jevMode || "efficient";
+  const jevLowConfidence = strategy.jevLowConfidence || "hold";
+  // Local typing state for rubric inputs; merged into settings on blur.
+  const [jevDraft, setJevDraft] = useState({});
 
   return (
     <Card padding="sm" className={`group ${selected ? "ring-1 ring-primary/40 bg-primary/[0.03]" : ""}`}>
@@ -746,6 +812,57 @@ const comboCaps = aggregateComboCapabilities(combo.models, comboByName);
           onChange={(patch) => onSetStrategy({ composite: { ...(strategy.composite || {}), ...patch } })}
           activeProviders={activeProviders}
         />
+      )}
+
+      {isJev && (
+        !jevConfigured ? (
+          <div className="px-3 pb-2 space-y-1">
+            <p className="text-[10px] text-text-muted pt-1.5">TypeSafe API key required — until set, Jev falls back to normal combo order. (env TYPESAFE_API_KEY also works)</p>
+            <JevKeyInput onSaved={onJevKeySaved} />
+          </div>
+        ) : combo.models.length > 1 && (
+        <div className="px-3 pb-2 border-t border-border-light space-y-1">
+          <div className="flex items-center gap-2 pt-1.5">
+            <span className="text-[10px] text-text-muted shrink-0">Jev priority:</span>
+            <select
+              value={jevMode}
+              onChange={(e) => onSetStrategy({ jevMode: e.target.value })}
+              className="px-1.5 py-0.5 text-[10px] bg-input border border-border rounded-md outline-none focus:border-primary cursor-pointer"
+            >
+              <option value="efficient">Efficient — cheapest model that can handle it</option>
+              <option value="balanced">Balanced — quality and cost equally</option>
+              <option value="quality">Quality — best output, cheap only when trivial</option>
+            </select>
+            <span className="text-[10px] text-text-muted shrink-0 ml-1">When uncertain:</span>
+            <select
+              value={jevLowConfidence}
+              onChange={(e) => onSetStrategy({ jevLowConfidence: e.target.value })}
+              className="px-1.5 py-0.5 text-[10px] bg-input border border-border rounded-md outline-none focus:border-primary cursor-pointer"
+            >
+              <option value="hold">Hold — keep combo order</option>
+              <option value="rank">Follow Jev ranking</option>
+            </select>
+          </div>
+          <p className="text-[10px] text-text-muted">Optional one-line notes Jev sees when choosing (blank = auto from model capabilities):</p>
+          {combo.models.map((m) => (
+            <div key={m} className="flex items-center gap-1.5">
+              <span title={m} className="text-[10px] text-text-muted font-mono truncate w-40 shrink-0">{m}</span>
+              <input
+                value={jevDraft[m] ?? jevRubrics[m] ?? ""}
+                onChange={(e) => setJevDraft({ ...jevDraft, [m]: e.target.value })}
+                onBlur={() => {
+                  const merged = { ...jevRubrics, ...jevDraft };
+                  const cleaned = Object.fromEntries(Object.entries(merged).map(([k, v]) => [k, String(v).trim()]).filter(([, v]) => v));
+                  setJevDraft({});
+                  onSetStrategy({ jevRubrics: Object.keys(cleaned).length ? cleaned : undefined });
+                }}
+                placeholder="e.g. cheap, great at mechanical edits"
+                className="flex-1 px-2 py-1 text-[11px] bg-input border border-border rounded-md outline-none focus:border-primary placeholder:text-text-muted/50 min-w-0"
+              />
+            </div>
+          ))}
+        </div>
+        )
       )}
 
       {/* Judge model picker (single-select; combo members make natural judges too) */}
