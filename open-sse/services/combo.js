@@ -6,6 +6,11 @@ import { checkFallbackError, formatRetryAfter } from "./accountFallback.js";
 import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
+import { resetRoutingState } from "./combo/session-state.js";
+
+// Composite-stage strategy lives in ./combo/ but is re-exported here so callers keep
+// importing every combo strategy from one module.
+export { handleCompositeStageChat } from "./combo/composite-stage.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -243,6 +248,9 @@ export function getRotatedModels(models, comboName, strategy, stickyLimit = 1) {
 export function resetComboRotation(comboName) {
   if (comboName) comboRotationState.delete(comboName);
   else comboRotationState.clear();
+  // Composite-stage tiers are chosen under a specific configuration, so an edited
+  // strategy must not leave live conversations pinned to the old decision.
+  resetRoutingState(comboName);
 }
 
 /**
