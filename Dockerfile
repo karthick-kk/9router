@@ -6,9 +6,6 @@ ARG APP_VERSION=unknown
 FROM ${NODE_IMAGE} AS base
 ARG ALPINE_MIRROR
 WORKDIR /app
-
-# Use the official Alpine mirror by default. A repository variable/build arg can
-# override it for environments that require a regional mirror.
 RUN if [ "$ALPINE_MIRROR" != "dl-cdn.alpinelinux.org" ]; then \
       sed -i "s|dl-cdn.alpinelinux.org|${ALPINE_MIRROR}|g" /etc/apk/repositories; \
     fi
