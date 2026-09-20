@@ -51,6 +51,7 @@ const STRATEGY_OPTIONS = [
   { value: "fallback", label: "Fallback — try in order" },
   { value: "round-robin", label: "Round Robin — rotate" },
   { value: "smart", label: "Smart Router — System One" },
+  { value: "adaptive", label: "Adaptive — pick by health" },
   { value: "fusion", label: "Fusion — panel + judge" },
   { value: "composite-stage", label: "Composite — Capable First" },
 ];
@@ -657,6 +658,15 @@ function getRouterModelStatus(routerModel, activeProviders) {
   return { ready: false, label: "Not configured", providerId };
 }
 
+// Presets for the adaptive strategy (mirrors ADAPTIVE_PRESETS in
+// open-sse/services/combo/adaptive-scoring.js). Display order matches the
+// emphasis each preset puts on reliability vs. speed.
+const ADAPTIVE_PRESET_OPTIONS = [
+  { value: "reliable", label: "Reliable — favor uptime (default)" },
+  { value: "balanced", label: "Balanced — split uptime / speed" },
+  { value: "fastest", label: "Fastest — favor low latency" },
+];
+
 const PICKER_OPTIONS = [
   { value: "capable_first", label: "Capable first — prefer quality" },
   { value: "efficient_first", label: "Efficient first — prefer cost" },
@@ -699,6 +709,7 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
   // answer for /api/models.
   const comboCaps = aggregateComboCapabilities(combo.models, comboByName, getCaps);
   const isComposite = current === "composite-stage";
+  const isAdaptive = current === "adaptive";
 
   return (
     <Card padding="sm" className={`group ${selected ? "ring-1 ring-primary/40 bg-primary/[0.03]" : ""}`}>
@@ -830,6 +841,18 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
               onChange={(e) => onSetStrategy({ fallbackStrategy: e.target.value })}
               selectClassName="py-1.5 text-xs"
             />
+            {/* Adaptive preset — only relevant when the strategy is adaptive */}
+            {isAdaptive && (
+              <div className="mt-2 flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-text-muted">Emphasis</span>
+                <Select
+                  options={ADAPTIVE_PRESET_OPTIONS}
+                  value={strategy.adaptivePreset || "reliable"}
+                  onChange={(e) => onSetStrategy({ adaptivePreset: e.target.value })}
+                  selectClassName="py-1 text-[11px]"
+                />
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-3 gap-1 sm:flex">
