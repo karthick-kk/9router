@@ -50,6 +50,7 @@ const STRATEGY_OPTIONS = [
   { value: "fallback", label: "Fallback — try in order" },
   { value: "round-robin", label: "Round Robin — rotate" },
   { value: "fusion", label: "Fusion — panel + judge" },
+  { value: "composite-stage", label: "Composite — Capable First" },
 ];
 
 export default function CombosPage() {
@@ -372,6 +373,7 @@ export default function CombosPage() {
             <li><span className="font-medium text-text-main">Fallback</span> — tries models in order (next on failure)</li>
             <li><span className="font-medium text-text-main">Round Robin</span> — rotates models across requests to spread load</li>
             <li><span className="font-medium text-text-main">Fusion</span> — queries all models in parallel, then a judge synthesizes one answer. Best quality, but costs the most: every request bills all panel models + the judge (N+1 calls)</li>
+            <li><span className="font-medium text-text-main">Composite — Capable First</span> — starts each task on the capable or efficient model based on a cheap classifier, then follows the agent&apos;s progress: trouble and exploration hold the capable model, routine editing hands off to the efficient one. One model per turn, so it costs no more than a single call</li>
           </ul>
           <p className="hidden text-xs text-text-muted mt-3 max-w-2xl">
             <span className="font-medium text-text-main">Cursor / Claude Default</span> create combos named exactly like those clients&apos; model IDs (e.g. <code className="font-mono">composer-2.5</code>, <code className="font-mono">opus</code>), seeded with the matching <code className="font-mono">cu/…</code> or <code className="font-mono">cc/…</code> route so traffic can hit 9router without the prefix.
@@ -563,12 +565,41 @@ const fmtK = (n) => {
   return `${Math.round(n / 1000)}k`;
 };
 
+const PICKER_OPTIONS = [
+  { value: "capable_first", label: "Capable first — prefer quality" },
+  { value: "efficient_first", label: "Efficient first — prefer cost" },
+];
+
+// Mirrors COMPOSITE_DEFAULTS in open-sse/services/combo/composite-stage.js. Kept as
+// display defaults only: an unset field is stored as absent so the engine's own
+// default applies rather than a value frozen into settings.
+const COMPOSITE_UI_DEFAULTS = {
+  picker: "capable_first",
+  threshold: 0.75,
+  upgradeThreshold: 0.5,
+  downgradeThreshold: 0.25,
+  hysteresis: true,
+};
+
+const COMPOSITE_TIERS = [
+  { key: "capableModel", label: "Capable", icon: "workspace_premium", hint: "Handles architecture, debugging and anything ambiguous. Defaults to the combo's first model." },
+  { key: "efficientModel", label: "Efficient", icon: "bolt", hint: "Handles clearly routine implementation work. Defaults to the combo's second model." },
+  { key: "classifierModel", label: "Classifier", icon: "route", hint: "Rates each new user turn as capable or efficient. Leave unset to always start on the capable model." },
+];
+
+const COMPOSITE_NUMERIC = [
+  { key: "threshold", label: "Classifier threshold", hint: "Confidence needed before the classifier can move a task off the capable model." },
+  { key: "upgradeThreshold", label: "Upgrade at", hint: "Stage score at or above which the next turn escalates to the capable model." },
+  { key: "downgradeThreshold", label: "Downgrade at", hint: "Stage score at or below which the next turn drops to the efficient model." },
+];
+
 function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, selected = false, onToggleSelect }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
   const isFusion = current === "fusion";
-  const comboCaps = aggregateComboCapabilities(combo.models, comboByName);
+const comboCaps = aggregateComboCapabilities(combo.models, comboByName);
+  const isComposite = current === "composite-stage";
 
   return (
     <Card padding="sm" className={`group ${selected ? "ring-1 ring-primary/40 bg-primary/[0.03]" : ""}`}>
@@ -684,6 +715,16 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
         </div>
       </div>
 
+      {/* Composite: tier models + routing thresholds */}
+      {isComposite && (
+        <CompositeStagePanel
+          combo={combo}
+          config={strategy.composite || {}}
+          onChange={(patch) => onSetStrategy({ composite: { ...(strategy.composite || {}), ...patch } })}
+          activeProviders={activeProviders}
+        />
+      )}
+
       {/* Judge model picker (single-select; combo members make natural judges too) */}
       {showJudgeSelect && (
         <ModelSelectModal
@@ -697,6 +738,116 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
         />
       )}
     </Card>
+  );
+}
+
+function CompositeStagePanel({ combo, config, onChange, activeProviders }) {
+  const [picking, setPicking] = useState(null);
+  const models = combo.models || [];
+  // Shown when a tier is unset, so the effective routing is visible without saving.
+  const implicit = {
+    capableModel: models[0] || "",
+    efficientModel: models.find((m) => m !== (config.capableModel || models[0])) || "",
+    classifierModel: "",
+  };
+
+  const setNumeric = (key, raw) => {
+    if (raw === "") return onChange({ [key]: undefined });
+    const n = Number(raw);
+    if (!Number.isFinite(n) || n < 0 || n > 1) return;
+    onChange({ [key]: n });
+  };
+
+  return (
+    <div className="mt-3 flex flex-col gap-3 rounded-lg border border-black/5 bg-black/[0.02] p-3 dark:border-white/5 dark:bg-white/[0.02]">
+      <p className="text-[11px] text-text-muted">
+        Each new user turn is rated by the classifier; later turns in the same tool loop are routed on
+        what the agent is actually doing. Errors, repeated failures and broad exploration hold the
+        capable model; steady editing lets the efficient model take over. Anything ambiguous stays capable.
+      </p>
+
+      {/* Tier models */}
+      <div className="flex flex-col gap-2">
+        {COMPOSITE_TIERS.map(({ key, label, icon, hint }) => {
+          const value = config[key] || "";
+          return (
+            <div key={key} className="flex min-w-0 flex-col gap-1 sm:flex-row sm:items-center sm:gap-2">
+              <span className="flex w-full items-center gap-1 text-[11px] font-medium text-text-muted sm:w-[92px] sm:shrink-0">
+                <span className="material-symbols-outlined text-[14px]">{icon}</span>
+                {label}
+              </span>
+              <button
+                onClick={() => setPicking(key)}
+                title={hint}
+                className="inline-flex min-w-0 max-w-full items-center gap-1 rounded border border-dashed border-primary/40 px-1.5 py-0.5 font-mono text-[11px] text-primary transition-colors hover:border-primary hover:bg-primary/5"
+              >
+                <span className="truncate">{value || (implicit[key] ? `Auto — ${implicit[key]}` : "Not set")}</span>
+              </button>
+              {value && (
+                <button
+                  onClick={() => onChange({ [key]: "" })}
+                  className="rounded p-0.5 text-text-muted transition-colors hover:bg-red-500/10 hover:text-red-500"
+                  title={`Reset ${label} to Auto`}
+                >
+                  <span className="material-symbols-outlined text-[13px]">close</span>
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Picker + hysteresis */}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+        <div className="w-full sm:w-[240px]">
+          <Select
+            options={PICKER_OPTIONS}
+            value={config.picker || COMPOSITE_UI_DEFAULTS.picker}
+            onChange={(e) => onChange({ picker: e.target.value })}
+            selectClassName="py-1 text-[11px]"
+          />
+        </div>
+        <div title="Requires stronger evidence to change tier, so a long tool loop can't flap between models.">
+          <Toggle
+            size="sm"
+            checked={config.hysteresis !== false}
+            onChange={(next) => onChange({ hysteresis: next })}
+            label="Hysteresis"
+          />
+        </div>
+      </div>
+
+      {/* Thresholds */}
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        {COMPOSITE_NUMERIC.map(({ key, label, hint }) => (
+          <label key={key} className="flex flex-col gap-1" title={hint}>
+            <span className="text-[11px] font-medium text-text-muted">{label}</span>
+            <Input
+              type="number"
+              min="0"
+              max="1"
+              step="0.05"
+              value={config[key] ?? ""}
+              placeholder={String(COMPOSITE_UI_DEFAULTS[key])}
+              onChange={(e) => setNumeric(key, e.target.value)}
+              inputClassName="py-1 text-[11px]"
+            />
+          </label>
+        ))}
+      </div>
+
+      {picking && (
+        <ModelSelectModal
+          isOpen={!!picking}
+          onClose={() => setPicking(null)}
+          onSelect={(m) => { onChange({ [picking]: m?.value || "" }); setPicking(null); }}
+          activeProviders={activeProviders}
+          title={`Select ${COMPOSITE_TIERS.find((t) => t.key === picking)?.label} Model`}
+          addedModelValues={config[picking] ? [config[picking]] : []}
+          closeOnSelect={true}
+        />
+      )}
+    </div>
   );
 }
 

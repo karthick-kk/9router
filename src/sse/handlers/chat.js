@@ -15,7 +15,7 @@ import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
-import { handleComboChat, handleFusionChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
+import { handleComboChat, handleFusionChat, handleCompositeStageChat, detectRequiredCapabilities } from "open-sse/services/combo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -24,6 +24,18 @@ import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
+import { resolveSessionIdentity } from "open-sse/utils/sessionManager.js";
+
+/**
+ * Composite-stage routing state must follow one conversation across the many
+ * requests of a tool loop, so it keys on the same conversation-stable id the
+ * providers use for prompt caching. `scope` keeps combo state separate from a
+ * provider's own session store.
+ */
+function comboSessionId(request, body) {
+  const headers = request?.headers ? Object.fromEntries(request.headers.entries()) : null;
+  return resolveSessionIdentity({ headers, body, scope: "combo" }).sessionId;
+}
 
 /**
  * Handle chat completion request
@@ -122,6 +134,33 @@ export async function handleChat(request, clientRawRequest = null) {
       });
     }
 
+    if (comboStrategy === "composite-stage") {
+      log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: composite-stage)`);
+      return handleCompositeStageChat({
+        body,
+        models: comboModels,
+        // The classifier is a side request, not the user's turn: strip its tools from
+        // the logged raw request, the same way fusion treats a panel call.
+        // Inject combo name into clientRawRequest so usage tracking can attribute
+        // costs to the composite strategy (for efficiency measurement).
+        handleSingleModel: (b, m, isClassifier) => {
+          const compositeRawReq = clientRawRequest
+            ? { ...clientRawRequest, combo: modelStr, comboStrategy: "composite-stage" }
+            : null;
+          let cleanRawReq = compositeRawReq;
+          if (isClassifier && compositeRawReq) {
+            const { tools, tool_choice, ...cleanBody } = compositeRawReq.body || {};
+            cleanRawReq = { ...compositeRawReq, body: cleanBody };
+          }
+          return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+        },
+        log,
+        comboName: modelStr,
+        sessionId: comboSessionId(request, body),
+        config: comboStrategies[modelStr]?.composite,
+      });
+    }
+
     const comboStickyLimit = settings.comboStickyRoundRobinLimit;
     log.info("CHAT", `Combo "${modelStr}" with ${augmentedModels.length} models (strategy: ${comboStrategy}, sticky: ${comboStickyLimit})`);
     return handleComboChat({
@@ -196,6 +235,26 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           comboName: modelStr,
           judgeModel: comboStrategies[modelStr]?.judgeModel,
           tuning: comboStrategies[modelStr]?.fusionTuning,
+        });
+      }
+
+      if (comboStrategy === "composite-stage") {
+        log.info("CHAT", `Combo "${modelStr}" with ${comboModels.length} models (strategy: composite-stage)`);
+        return handleCompositeStageChat({
+          body,
+          models: comboModels,
+          handleSingleModel: (b, m, isClassifier) => {
+            let cleanRawReq = clientRawRequest;
+            if (isClassifier && clientRawRequest) {
+              const { tools, tool_choice, ...cleanBody } = clientRawRequest.body || {};
+              cleanRawReq = { ...clientRawRequest, body: cleanBody };
+            }
+            return handleSingleModelChat(b, m, cleanRawReq, request, apiKey);
+          },
+          log,
+          comboName: modelStr,
+          sessionId: comboSessionId(request, body),
+          config: comboStrategies[modelStr]?.composite,
         });
       }
 

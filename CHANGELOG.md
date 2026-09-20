@@ -77,6 +77,22 @@
 - **Usage**: parse the Fable weekly limit from `limits[]` instead of fabricating a row (#3847)
 - **Auth**: set a 24h `maxAge` on the dashboard session cookie
 
+# Unreleased
+
+## Features
+- **Combo Composite — Capable First strategy** — a quality-first router that keeps a
+  capable model in charge of hard work while a cheap model handles routine turns.
+  Each new user turn is rated by a configurable classifier model; later turns in the
+  same tool loop are routed on the agent's own trajectory (error severity, repeated
+  failures, exploration vs. steady editing). Errors and exploration hold the capable
+  model, clearly mechanical production hands off to the efficient one, and anything
+  ambiguous stays capable. One model per turn, so it costs no more than a single call.
+  Capable/efficient/classifier models, picker (`capable_first` / `efficient_first`),
+  classifier threshold and the upgrade/downgrade thresholds are all configurable per
+  combo. Routing state is per conversation and survives the many requests of a tool
+  loop; a classifier failure resolves to the capable tier, a scorer failure keeps the
+  current tier, and an unavailable efficient model falls back to capable
+
 # v0.5.69 (2026-09-05)
 
 ## Features
