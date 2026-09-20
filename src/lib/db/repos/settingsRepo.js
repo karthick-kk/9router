@@ -17,6 +17,10 @@ const DEFAULT_SETTINGS = {
   comboStrategy: "fallback",
   comboStickyRoundRobinLimit: 1,
   comboStrategies: {},
+  jevApiKey: "",
+  jevUrl: "https://api.typesafe.ai/v1/systemone",
+  jevTimeoutMs: 3000,
+  jevConfidenceGate: 0.5,
   capacityAdapter: {
     vision: { enabled: true, roundRobin: false, models: [] },
     pdf: { enabled: false, roundRobin: false, models: [] },
