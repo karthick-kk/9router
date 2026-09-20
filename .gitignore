@@ -103,3 +103,16 @@ start-dev-silent.cjs
 debug.log
 # Credential record written by the ericaiproxy container mount
 .ericai_authrecord
+
+# Local memsearch plugin index/state
+.memsearch/
+
+# Local codewhale subagent tool state
+.codewhale/
+
+# Local diagram-design working file
+.diagram-design
+
+# Compose backups / local variants
+docker-compose.yml.bak
+docker-compose_minimal.yml
