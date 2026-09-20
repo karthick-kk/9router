@@ -30,7 +30,8 @@ export const COMPOSITE_DEFAULTS = {
   threshold: 0.75,
   // Asymmetric on purpose: escalating to capable is cheap insurance, downgrading
   // risks a bad turn, so leaving capable demands much stronger evidence than
-  // staying on it. This asymmetry is the anti-oscillation mechanism.
+  // staying on it. The gap between the two is the hysteresis band — a score inside
+  // it holds the current tier, which is what stops a long tool loop from flapping.
   upgradeThreshold: 0.50,
   downgradeThreshold: 0.25,
   hysteresis: true,
