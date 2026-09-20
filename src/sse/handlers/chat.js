@@ -222,6 +222,10 @@ export async function handleChat(request, clientRawRequest = null) {
             log,
           })
         : null,
+      // The adaptive preset is per-combo (comboStrategies[modelStr].adaptivePreset),
+      // not the global strategy — one combo can run adaptive "fastest" while another
+      // runs "reliable". Null → adaptive-scoring's default ("reliable").
+      adaptivePreset: comboStrategies[modelStr]?.adaptivePreset,
     });
   }
 
@@ -324,6 +328,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
               log,
             })
           : null,
+        // Per-combo adaptive preset; null → adaptive-scoring's default ("reliable").
+        adaptivePreset: comboStrategies[modelStr]?.adaptivePreset,
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
