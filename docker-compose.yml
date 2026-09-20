@@ -13,7 +13,10 @@ services:
       - TS_AUTHKEY=${TS_AUTHKEY}
       - TS_HOSTNAME=9router
       - TS_STATE_DIR=/var/lib/tailscale
-      - TS_USERSPACE=false
+      # Userspace mode: keeps Tailscale's CGNAT netstack out of the host kernel,
+      # so it stops fighting Cloudflare WARP (which tunnels 100.64.0.0/12) for
+      # the ip rules / nftables that gate intranet access (VDI 100.76.234.0/26).
+      - TS_USERSPACE=true
     volumes:
       - 9router-ts-state:/var/lib/tailscale
 
@@ -21,6 +24,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      network: host
     restart: always
     network_mode: host
     extra_hosts:
@@ -73,6 +77,7 @@ services:
   ericaiproxy:
     build:
       context: ${ERICAI_PROXY_DIR:-../ericai-client}
+      network: host
       dockerfile_inline: |
         FROM python:3.13-slim
         WORKDIR /app
