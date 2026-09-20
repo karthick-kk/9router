@@ -17,7 +17,9 @@ export const TIER = {
 
 export const CLASSIFICATION_UNKNOWN = "unknown";
 
-// Safety cap between sweeps, matching sessionManager's MAX_SESSIONS approach.
+// Safety cap between sweeps, sized like sessionManager's conversation-keyed stores
+// (MAX_ASSISTANT_SESSIONS / MAX_CONTINUATION_SESSIONS) rather than its smaller
+// per-connection one, since this store is keyed per conversation too.
 const MAX_ROUTING_SESSIONS = 5000;
 
 /** @type {Map<string, { state: object, lastUsed: number }>} */
