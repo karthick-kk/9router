@@ -5,7 +5,13 @@ import { GEMINI_CONFIG, ZED_HOSTED_CONFIG } from "@/lib/oauth/constants/oauth";
 import { refreshGoogleToken, refreshCodexToken, updateProviderCredentials } from "@/sse/services/tokenRefresh";
 import { resolveOllamaLocalHost } from "open-sse/config/providers.js";
 import { getModelsByProviderId } from "open-sse/config/providerModels.js";
-import { resolveKiroModels } from "open-sse/services/kiroModels.js";
+import { resolveKiroModels, buildVariants } from "open-sse/services/kiroModels.js";
+import { resolveKiroEffortPath } from "open-sse/config/kiroConstants.js";
+import {
+  resolveKiroCliProfileArn,
+  fetchKiroCliCatalog,
+  normalizeKiroCliModel,
+} from "open-sse/services/kiroCliModels.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels } from "open-sse/services/qoderModels.js";
 import { resolveGrokCliModels } from "open-sse/services/grokCliModels.js";
@@ -446,8 +452,51 @@ const PROVIDER_MODELS_CONFIG = {
       return { models: [], warning };
     }
   },
-  qoder: buildQoderModelsResolver("qoder"),
+qoder: buildQoderModelsResolver("qoder"),
   "qoder-cn": buildQoderModelsResolver("qoder-cn"),
+  "kiro-cli": {
+    customResolver: async (connection) => {
+      const psd = connection.providerSpecificData || {};
+      let warning;
+      try {
+        // Resolve the account's profileArn over the gateway (region-aware), then
+        // list the live catalog in the API region the profile lives in.
+        const profileArn = await resolveKiroCliProfileArn(connection.accessToken, psd.region, { log: console });
+        if (!profileArn) {
+          return {
+            models: getStaticProviderModels("kiro-cli"),
+            warning: "Kiro CLI could not resolve a profileARN (no entitlement bound); using static catalog.",
+          };
+        }
+        const raw = await fetchKiroCliCatalog(connection.accessToken, profileArn, psd.region, { log: console });
+        // Expand each upstream gateway model into the synthetic variant set
+        // (`-thinking`, `-agentic`, `-thinking-agentic`), mirroring legacy kiro.
+        // Unlike legacy kiro (CodeWhisperer surface), the gateway REJECTS
+        // `additionalModelRequestFields` thinking for models below the reasoning
+        // boundary (resolveKiroEffortPath === null, e.g. 4.5), so drop the
+        // `-thinking` variants for those rather than offer a 400.
+        const thinkingSupported = (modelId) => resolveKiroEffortPath(modelId) !== null;
+        const models = raw
+          .map(normalizeKiroCliModel)
+          .filter((m) => m.id)
+          .flatMap((m) =>
+            buildVariants(m.id, m.name)
+              .filter((v) => v.capabilities.thinking ? thinkingSupported(m.id) : true)
+              .map((v) => ({
+                ...v,
+                contextLength: m.contextWindow,
+                rateMultiplier: m.rateMultiplier,
+            }))
+          );
+        if (models.length) return { models };
+        warning = "Kiro CLI returned no models; falling back to static catalog.";
+      } catch (error) {
+        warning = `Failed to fetch Kiro CLI models: ${error.message}`;
+        console.log("Failed to fetch Kiro CLI models dynamically, falling back to static:", error.message);
+      }
+      return { models: [], warning };
+    }
+  },
   "gemini-cli": {
     customResolver: buildOAuthResolver({
       refreshFn: (conn) => refreshGoogleToken(conn.refreshToken, GEMINI_CONFIG.clientId, GEMINI_CONFIG.clientSecret),

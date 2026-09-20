@@ -245,7 +245,7 @@ export async function GET(request, { params }) {
       const startUrl = searchParams.get("start_url");
       const region = searchParams.get("region");
       const authMethod = searchParams.get("auth_method");
-      const deviceOptions = provider === "kiro"
+      const deviceOptions = provider === "kiro" || provider === "kiro-cli"
         ? {
             ...(startUrl ? { startUrl } : {}),
             ...(region ? { region } : {}),
@@ -257,6 +257,7 @@ export async function GET(request, { params }) {
       const noPkceDeviceProviders = [
         "github",
         "kiro",
+        "kiro-cli",
         "kimi",
         "kimi-coding",
         "kilocode",
@@ -503,7 +504,7 @@ export async function POST(request, { params }) {
       if (noPkceProviders.includes(provider)) {
         // kimi needs extraData._kimiDeviceId for stable X-Msh-Device-Id (CLIProxyAPI parity)
         result = await pollForToken(provider, deviceCode, null, extraData);
-      } else if (provider === "kiro") {
+      } else if (provider === "kiro" || provider === "kiro-cli") {
         // Kiro needs extraData (clientId, clientSecret) from device code response
         result = await pollForToken(provider, deviceCode, null, extraData);
       } else if (provider === "qoder" || provider === "qoder-cn") {

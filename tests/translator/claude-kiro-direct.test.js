@@ -123,6 +123,81 @@ describe("Claude → Kiro (direct route)", () => {
     expect(out.systemPrompt).toContain("<max_thinking_length>24576</max_thinking_length>");
   });
 
+  // Claude-native clients (Claude Code, ZCode) express thinking only as
+  // `thinking.budget_tokens` and never send an effort string. Without a budget →
+  // effort mapping the native fields were dropped on this route and thinking
+  // degraded to the `<thinking_mode>` prompt tag, which sonnet ignores (opus
+  // happened to obey it), so sonnet produced no thinking at all.
+  it("maps Claude thinking.budget_tokens to native effort fields for effort models", () => {
+    const out = C2K({
+      thinking: { type: "enabled", budget_tokens: 24576 },
+      messages: [{ role: "user", content: "think hard" }],
+    }, null, "claude-sonnet-5");
+
+    expect(out.additionalModelRequestFields).toEqual({
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "high" },
+    });
+  });
+
+  it.each([
+    [1024, "low"],
+    [8000, "medium"],
+    [24576, "high"],
+  ])("maps thinking budget %i to effort %s", (budget_tokens, effort) => {
+    const out = C2K({
+      thinking: { type: "enabled", budget_tokens },
+      messages: [{ role: "user", content: "think" }],
+    }, null, "claude-sonnet-5");
+
+    expect(out.additionalModelRequestFields.output_config).toEqual({ effort });
+  });
+
+  it("treats a disabled thinking block as no thinking", () => {
+    const out = C2K({ thinking: { type: "disabled" }, messages: [{ role: "user", content: "hi" }] }, null, "claude-sonnet-5");
+    expect(out.additionalModelRequestFields).toBeUndefined();
+  });
+
+  // `{type: "enabled", budget_tokens: 0}` is self-contradictory. `type` is the
+  // stronger signal and is what the shared extractThinking() concern already
+  // honours (mode "auto"), so thinking stays on at the default level.
+  it("honours type enabled over a zero budget", () => {
+    const out = C2K({
+      thinking: { type: "enabled", budget_tokens: 0 },
+      messages: [{ role: "user", content: "hi" }],
+    }, null, "claude-sonnet-5");
+
+    expect(out.additionalModelRequestFields.output_config).toEqual({ effort: "medium" });
+  });
+
+  it("lets an explicit effort string win over a thinking budget", () => {
+    const out = C2K({
+      reasoning_effort: "low",
+      thinking: { type: "enabled", budget_tokens: 24576 },
+      messages: [{ role: "user", content: "think" }],
+    }, null, "claude-sonnet-5");
+
+    expect(out.additionalModelRequestFields.output_config).toEqual({ effort: "low" });
+  });
+
+  it("still sends no native fields for a thinking budget on a legacy model", () => {
+    const out = C2K({
+      thinking: { type: "enabled", budget_tokens: 24576 },
+      messages: [{ role: "user", content: "think" }],
+    }, null, "claude-sonnet-4.5");
+
+    expect(out.additionalModelRequestFields).toBeUndefined();
+  });
+
+  it("enables native thinking from the -thinking suffix with no thinking block", () => {
+    const out = C2K({ messages: [{ role: "user", content: "think" }] }, null, "claude-sonnet-5-thinking");
+
+    expect(out.additionalModelRequestFields).toEqual({
+      thinking: { type: "adaptive", display: "summarized" },
+      output_config: { effort: "medium" },
+    });
+  });
+
   it("maps Claude-format effort to GPT-5.6 reasoning fields without legacy prompt tags", () => {
     const out = C2K({
       output_config: { effort: "low" },

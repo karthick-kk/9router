@@ -64,7 +64,7 @@ const PATTERN_THINKING = [
 
 // Returns valid thinking levels for a model, or null when the model has no reasoning.
 export function getThinkingLevels(provider, model) {
-  if (provider === "kiro" && resolveKiroEffortPath(model) === null) return null;
+  if ((provider === "kiro" || provider === "kiro-cli") && resolveKiroEffortPath(model) === null) return null;
   const caps = getCapabilitiesForModel(provider, model);
   if (!caps.reasoning) return null;
   const hit = PATTERN_THINKING.find((entry) =>

@@ -63,6 +63,10 @@ const OAUTH_TEST_CONFIG = {
     noAuth: true,
   },
   kiro: { checkExpiry: true, refreshable: true },
+  // kiro-cli probes the Kiro gateway management API (region-aware) to prove the
+  // token is authorized — unlike the legacy `kiro` entry above, which only
+  // checks token expiry and can report "valid" while inference is impossible.
+  "kiro-cli": { refreshable: true, kiroCliProbe: true },
   qoder: {
     // Test by hitting Qoder's userinfo endpoint with the device token.
     // refreshable: false because the device-flow refresh endpoint returns
@@ -266,7 +270,7 @@ async function refreshOAuthToken(connection) {
       return { accessToken: data.access_token, expiresIn: data.expires_in, refreshToken: data.refresh_token || refreshToken };
     }
 
-    if (provider === "kiro") {
+    if (provider === "kiro" || provider === "kiro-cli") {
       const psd = connection.providerSpecificData || {};
       const clientId = psd.clientId || connection.clientId;
       const clientSecret = psd.clientSecret || connection.clientSecret;
@@ -398,6 +402,49 @@ async function testOAuthConnection(connection, effectiveProxy = null) {
     newTokens = tokens;
     accessToken = tokens.accessToken;
     return await tryProbe(accessToken);
+  }
+
+  // kiro-cli: probe the Kiro gateway management API for the account's API region
+  // (derived from the SSO region). This proves the token is authorized and can
+  // resolve a profileARN — the thing the legacy `kiro` checkExpiry test misses.
+  if (connection.provider === "kiro-cli") {
+    const probeKiroCli = async (token) => {
+      try {
+        const { resolveKiroCliApiRegion } = await import("open-sse/services/kiroCliModels.js");
+        const ssoRegion = connection.providerSpecificData?.region || "us-east-1";
+        const apiRegion = resolveKiroCliApiRegion(ssoRegion);
+        const res = await fetchWithConnectionProxy(
+          `https://management.${apiRegion}.kiro.dev/List-Available-Profiles`,
+          {
+            method: "POST",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({}),
+          },
+          effectiveProxy
+        );
+        if (res.ok) return { valid: true, error: null, refreshed, newTokens };
+        const bodyText = await res.text().catch(() => "");
+        if (res.status === 401) return { valid: false, error: "Token invalid or revoked", refreshed };
+        if (res.status === 403) return { valid: false, error: "Access denied (no Kiro profile bound to this account)", refreshed };
+        return { valid: false, error: parseProviderErrorMessage(bodyText, `API returned ${res.status}`), refreshed };
+      } catch (err) {
+        return { valid: false, error: err.message, refreshed };
+      }
+    };
+
+    const initial = await probeKiroCli(accessToken);
+    if (initial.valid || initial.error !== "Token invalid or revoked" || !connection.refreshToken) {
+      return initial;
+    }
+    const tokens = await refreshOAuthToken(connection);
+    if (!tokens?.accessToken) {
+      return { valid: false, error: "Token invalid or revoked", refreshed: false };
+    }
+    return await probeKiroCli(tokens.accessToken);
   }
 
   try {

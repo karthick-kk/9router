@@ -16,7 +16,7 @@
  */
 
 import { extractThinking, parseSuffix } from "../translator/concerns/thinkingUnified.js";
-import { effortToBudget } from "../translator/concerns/thinking.js";
+import { effortToBudget, budgetToEffort } from "../translator/concerns/thinking.js";
 
 export const KIRO_AGENTIC_SUFFIX = "-agentic";
 export const KIRO_THINKING_SUFFIX = "-thinking";
@@ -176,12 +176,31 @@ export function extractKiroEffortLevel(body) {
     body?.output_config?.effort ??
     body?.reasoning_effort ??
     (typeof body?.reasoning === "object" ? body.reasoning?.effort : null);
-  if (typeof effort !== "string") return null;
+  if (typeof effort !== "string") {
+    // Claude-native callers express thinking as `thinking.budget_tokens` and
+    // never send an effort string. Without this the native effort fields are
+    // dropped on the /v1/messages route and thinking silently degrades to the
+    // `<thinking_mode>` prompt tag, which some models (sonnet) ignore.
+    return extractKiroClaudeBudgetEffort(body);
+  }
   const normalized = effort.toLowerCase();
   if (normalized === "none" || normalized === "off" || normalized === "disabled") return null;
   if (normalized === "xhigh" || normalized === "max") return "high";
   if (["low", "medium", "high"].includes(normalized)) return normalized;
   return null;
+}
+
+/** Claude `thinking: {type, budget_tokens}` → Kiro effort level. */
+function extractKiroClaudeBudgetEffort(body) {
+  const thinking = body?.thinking;
+  if (!thinking || typeof thinking !== "object") return null;
+  if (thinking.type === "disabled" || thinking.type === "none") return null;
+  const budget = Number(thinking.budget_tokens);
+  if (Number.isFinite(budget) && budget > 0) return budgetToEffort(budget);
+  // A zero/absent budget alongside `type: "enabled"` is contradictory; `type` is
+  // the stronger signal and matches what extractThinking() reports, so think at
+  // the default level rather than silently disabling.
+  return thinking.type === "enabled" || thinking.type === "adaptive" ? "medium" : null;
 }
 
 function extractKiroGptEffortLevel(body) {
@@ -199,15 +218,20 @@ function extractKiroGptEffortLevel(body) {
   return null;
 }
 
-export function buildKiroAdditionalModelRequestFields(body, effortPath = "output_config") {
-  const effort = effortPath === "reasoning"
-    ? extractKiroGptEffortLevel(body)
-    : extractKiroEffortLevel(body);
-  if (!effort) return undefined;
+export function buildKiroAdditionalModelRequestFields(body, effortPath = "output_config", fallbackBudget = null) {
   if (effortPath === "reasoning") {
+    const effort = extractKiroGptEffortLevel(body);
+    if (!effort) return undefined;
     // Mirrors Kiro CLI/KAS buildEffortRequestFields("reasoning") for GPT.
     return { reasoning: { effort } };
   }
+  // A `-thinking` model id resolves a thinking budget from the model-name hint
+  // alone, with no effort field anywhere in the body. Fall back to that budget
+  // so picking `<model>-thinking` enables native thinking on its own instead of
+  // requiring the caller to also send reasoning_effort / thinking.budget_tokens.
+  const effort = extractKiroEffortLevel(body)
+    || (fallbackBudget > 0 ? budgetToEffort(fallbackBudget) : null);
+  if (!effort) return undefined;
   // Mirrors Kiro CLI/KAS buildEffortRequestFields("output_config").
   return {
     thinking: { type: "adaptive", display: "summarized" },
@@ -221,6 +245,10 @@ export function resolveKiroEffortPath(model) {
   if (/(?:^|[/.])gpt[/.]5[/.]6(?:[/.]|$)/.test(normalized)) {
     return "reasoning";
   }
+  // `auto` has additionalModelRequestFieldsSchema: null in the gateway catalog
+  // and ignores thinking fields entirely (verified live: identical redacted-only
+  // reasoning with and without them, across every request shape), so it stays
+  // out of the thinking path.
   if (!normalized.includes("claude")) return null;
   const match = normalized.match(/(?:^|[/.])claude(?:[/.][a-z]+)*[/.](\d+)(?:[/.](\d+))?(?:[/.]|$)/);
   if (!match) return null;
@@ -245,10 +273,10 @@ export function usesKiroNativeGptEffort(body, model) {
     && extractKiroGptEffortLevel(body) !== null;
 }
 
-export function buildKiroAdditionalModelRequestFieldsForModel(body, model) {
+export function buildKiroAdditionalModelRequestFieldsForModel(body, model, fallbackBudget = null) {
   const effortPath = resolveKiroEffortPath(model);
   if (!effortPath) return undefined;
-  return buildKiroAdditionalModelRequestFields(body, effortPath);
+  return buildKiroAdditionalModelRequestFields(body, effortPath, fallbackBudget);
 }
 
 /**

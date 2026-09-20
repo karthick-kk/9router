@@ -41,7 +41,7 @@ const catalogCache = new Map();
  * any. Used only for display naming when a Kiro upstream id happens to look
  * synthetic (defensive).
  */
-function stripSyntheticSuffixes(id) {
+export function stripSyntheticSuffixes(id) {
   let out = id;
   if (out.endsWith("-agentic")) out = out.slice(0, -"-agentic".length);
   if (out.endsWith("-thinking")) out = out.slice(0, -"-thinking".length);
@@ -103,7 +103,7 @@ function buildKiroFingerprintHeaders(credentials) {
  * targets coding-agent file writes). Match CLIProxyAPIPlus and skip
  * `-agentic` / `-thinking-agentic` for `auto`.
  */
-function buildVariants(upstream, displayName) {
+export function buildVariants(upstream, displayName) {
   const safeUpstream = stripSyntheticSuffixes(upstream);
   const display = displayName || `Kiro ${safeUpstream}`;
   const isAuto = safeUpstream === "auto";

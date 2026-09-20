@@ -292,7 +292,7 @@ export default function ProvidersPage() {
   // (and sometimes "api_key"). Card stats must count both so totals match detail.
   // kiro has no authModes in registry but accepts both (headless uses "api_key").
   const dualAuthTypes = (info, key) => {
-    if (key === "kiro") return ["oauth", "apikey", "api_key"];
+    if (key === "kiro" || key === "kiro-cli") return ["oauth", "apikey", "api_key"];
     const modes = info?.authModes;
     // Free-tier and API-key providers default to supporting apikey even when the
     // registry entry omits authModes (e.g. cloudflare-ai, byteplus, ollama,

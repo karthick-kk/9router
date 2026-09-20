@@ -149,6 +149,45 @@ export const MODEL_CAPABILITIES = {
 
 const KIRO_GPT_5_6_CAPABILITIES = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 272000, maxOutput: 128000 };
 
+// Kiro `auto` routes to an upstream model server-side. The gateway catalog gives
+// it additionalModelRequestFieldsSchema: null and it ignores thinking fields, so
+// reasoning stays false — only tokenLimits are worth pinning here.
+const KIRO_AUTO_CAPABILITIES = { vision: true, search: true, contextWindow: 1000000, maxOutput: 64000 };
+
+// Kiro gateway tokenLimits, from List-Available-Models. The canonical table
+// carries Anthropic's direct-API ceilings (128K output on the output-128k beta),
+// but the gateway caps several models lower, so the honest per-provider numbers
+// live here. Values below are the gateway's own maxInputTokens/maxOutputTokens.
+const KIRO_SONNET_5_CAPS   = { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 64000 };
+const KIRO_OPUS_46_CAPS    = { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 64000 };
+const KIRO_SONNET_46_CAPS  = { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 64000 };
+const KIRO_MINIMAX_25_CAPS = { contextWindow: 196000, maxOutput: 64000 };
+const KIRO_MINIMAX_21_CAPS = { vision: true, contextWindow: 196000, maxOutput: 64000 };
+const KIRO_QWEN3_CAPS      = { vision: true, contextWindow: 256000, maxOutput: 64000 };
+
+// Spread one Kiro entry across the synthetic variants so the gateway's limits
+// apply to `-thinking` / `-agentic` / `-thinking-agentic` too, not just the base
+// id (each variant is looked up by its full name).
+function kiroVariantCaps(id, caps) {
+  return {
+    [id]: caps,
+    [`${id}-thinking`]: caps,
+    [`${id}-agentic`]: caps,
+    [`${id}-thinking-agentic`]: caps,
+  };
+}
+
+// Gateway tokenLimits shared by both Kiro providers.
+const KIRO_SHARED_CAPS = {
+  "auto": KIRO_AUTO_CAPABILITIES,
+  ...kiroVariantCaps("claude-sonnet-5", KIRO_SONNET_5_CAPS),
+  ...kiroVariantCaps("claude-opus-4.6", KIRO_OPUS_46_CAPS),
+  ...kiroVariantCaps("claude-sonnet-4.6", KIRO_SONNET_46_CAPS),
+  "minimax-m2.5": KIRO_MINIMAX_25_CAPS,
+  "minimax-m2.1": KIRO_MINIMAX_21_CAPS,
+  "qwen3-coder-next": KIRO_QWEN3_CAPS,
+};
+
 // Codex OAuth (ChatGPT backend) — per-model context window reported by upstream
 // (lower than OpenAI API's 1.05M). Sol differs from Terra/Luna. #2720
 const CODEX_GPT_56_SOL_CAPS  = { vision: true, reasoning: true, search: true, thinkingFormat: "openai", contextWindow: 372000, maxOutput: 128000 };
@@ -183,6 +222,24 @@ export const PROVIDER_CAPABILITIES = {
     "gpt-5.6-luna-review":       CODEX_GPT_56_DEFAULT_CAPS,
   },
   "kiro": {
+    ...KIRO_SHARED_CAPS,
+    "gpt-5.6-sol": KIRO_GPT_5_6_CAPABILITIES,
+    "gpt-5.6-terra": KIRO_GPT_5_6_CAPABILITIES,
+    "gpt-5.6-luna": KIRO_GPT_5_6_CAPABILITIES,
+    "gpt-5.6-sol-thinking": KIRO_GPT_5_6_CAPABILITIES,
+    "gpt-5.6-terra-thinking": KIRO_GPT_5_6_CAPABILITIES,
+    "gpt-5.6-luna-thinking": KIRO_GPT_5_6_CAPABILITIES,
+    "gpt-5.6-sol-agentic": KIRO_GPT_5_6_CAPABILITIES,
+    "gpt-5.6-terra-agentic": KIRO_GPT_5_6_CAPABILITIES,
+    "gpt-5.6-luna-agentic": KIRO_GPT_5_6_CAPABILITIES,
+    "gpt-5.6-sol-thinking-agentic": KIRO_GPT_5_6_CAPABILITIES,
+    "gpt-5.6-terra-thinking-agentic": KIRO_GPT_5_6_CAPABILITIES,
+    "gpt-5.6-luna-thinking-agentic": KIRO_GPT_5_6_CAPABILITIES,
+  },
+  // Kiro via the agent gateway. Same model surface as `kiro`; provider overrides
+  // are not inherited, so the entries that are not name-derivable are repeated.
+  "kiro-cli": {
+    ...KIRO_SHARED_CAPS,
     "gpt-5.6-sol": KIRO_GPT_5_6_CAPABILITIES,
     "gpt-5.6-terra": KIRO_GPT_5_6_CAPABILITIES,
     "gpt-5.6-luna": KIRO_GPT_5_6_CAPABILITIES,

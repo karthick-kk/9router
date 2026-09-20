@@ -140,6 +140,8 @@ const REFRESH_HANDLERS = {
   iflow: (c, log) => refreshIflowToken(c.refreshToken, log),
   github: (c, log) => refreshGitHubToken(c.refreshToken, log),
   kiro: (c, log) => refreshKiroToken(c.refreshToken, c.providerSpecificData, log),
+  "kiro-cli": (c, log) => refreshKiroCliToken(c.refreshToken, c.providerSpecificData, log),
+  krb: (c, log) => refreshKiroCliToken(c.refreshToken, c.providerSpecificData, log),
   xai: (c, log) => refreshXaiToken(c.refreshToken, log),
   // Grok CLI shares xAI OAuth client + token endpoint (device-code tokens refresh the same way)
   "grok-cli": (c, log) => refreshXaiToken(c.refreshToken, log),
@@ -272,4 +274,37 @@ export async function refreshWithRetry(refreshFn, maxRetries = 3, log = null) {
 
   log?.error?.("TOKEN_REFRESH", `All ${maxRetries} retry attempts failed`);
   return null;
+}
+
+/**
+ * Refresh a Kiro CLI (gateway) credential.
+ *
+ * Reuses the SSO OIDC refresh in `refreshKiroToken` (which already works for
+ * IDC tokens), then re-resolves the profileArn over the gateway management API
+ * when the SSO refresh did not carry one. The legacy `refreshKiroToken` resolves
+ * profileArn via the CodeWhisperer surface (us-east-1 only), which returns empty
+ * for accounts whose profile lives in another region — so we plug in the
+ * gateway resolver here.
+ */
+export async function refreshKiroCliToken(refreshToken, providerSpecificData, log, proxyOptions = null) {
+  if (!refreshToken) return null;
+  const refreshed = await refreshKiroToken(refreshToken, providerSpecificData, log, proxyOptions);
+  if (!refreshed?.accessToken) return refreshed;
+
+  // The SSO refresh already patches profileArn when the OIDC response carries it.
+  if (refreshed.providerSpecificData?.profileArn) return refreshed;
+
+  const { resolveKiroCliProfileArn } = await import("./kiroCliModels.js");
+  const profileArn = await resolveKiroCliProfileArn(
+    refreshed.accessToken,
+    providerSpecificData?.region,
+    { log }
+  );
+  return {
+    ...refreshed,
+    providerSpecificData: {
+      ...(refreshed.providerSpecificData || {}),
+      ...(profileArn ? { profileArn } : {}),
+    },
+  };
 }

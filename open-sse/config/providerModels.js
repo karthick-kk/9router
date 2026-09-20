@@ -21,7 +21,7 @@ export function getDefaultModel(aliasOrId) {
 // Providers whose registry uses dots in version numbers (e.g. "claude-sonnet-4.5").
 // For these, we tolerate clients sending dashes ("claude-sonnet-4-5") by normalizing
 // digit-hyphen-digit to digit-dot-digit before lookup. Other providers are left untouched.
-const DOT_VERSION_PROVIDERS = new Set(["kr", "kiro"]);
+const DOT_VERSION_PROVIDERS = new Set(["kr", "kiro", "krb", "kiro-cli"]);
 
 // Find a registry entry by id. For Kiro models, tolerates dash/dot version separators
 // ("claude-sonnet-4-5" ~= "claude-sonnet-4.5"). Other providers use exact match only.

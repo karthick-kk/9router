@@ -3,6 +3,7 @@ import "open-sse/index.js";
 
 import { generatePKCE } from "../utils/pkce.js";
 import { extractCodexAccountInfo, fetchKiroProfileArn } from "../providerHelpers.js";
+import { resolveKiroCliProfileArn } from "open-sse/services/kiroCliModels.js";
 
 import claude from "./claude.js";
 import codex from "./codex.js";
@@ -41,6 +42,9 @@ const PROVIDERS = {
   "qoder-cn": qoderCn,
   github,
   kiro,
+  // kiro-cli shares kiro's AWS SSO OIDC device flow (same KIRO_CONFIG); only the
+  // post-exchange profileArn resolution surface differs (gateway, handled in pollForToken).
+  "kiro-cli": kiro,
   cursor,
   kimi,
   kilocode,
@@ -177,9 +181,16 @@ export async function pollForToken(providerName, deviceCode, codeVerifier, extra
         extra = await provider.postExchange(result.data);
       }
       const tokens = provider.mapTokens(result.data, extra);
-      // Kiro IDC/Builder-ID tokens lack profileArn; resolve it to avoid 403
-      if (providerName === "kiro" && !tokens.providerSpecificData?.profileArn) {
-        const profileArn = await fetchKiroProfileArn(tokens.accessToken);
+      // Kiro IDC/Builder-ID tokens lack profileArn; resolve it to avoid 403.
+      // kiro-cli resolves over the Kiro gateway (region-aware), not the legacy
+      // us-east-1 codewhisperer surface.
+      if (!tokens.providerSpecificData?.profileArn) {
+        const profileArn =
+          providerName === "kiro-cli"
+            ? await resolveKiroCliProfileArn(tokens.accessToken, tokens.providerSpecificData?.region)
+            : providerName === "kiro"
+              ? await fetchKiroProfileArn(tokens.accessToken)
+              : null;
         if (profileArn) tokens.providerSpecificData.profileArn = profileArn;
       }
       return { success: true, tokens };
