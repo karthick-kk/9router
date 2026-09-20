@@ -194,11 +194,11 @@ export function scoreStage({ body, cfg = {} }) {
   }
   const classified = exploring + producing;
   const exploration = classified > 0 ? clamp01(exploring / classified) : 0;
-  // Production only counts as efficiency evidence when the work is actually landing.
-  // Editing and running commands while tests fail is not routine production, it is
-  // a struggle — so error evidence withdraws the credit rather than being cancelled
-  // by it. Without this, a spinning agent scores as "productive" and gets sent to
-  // the cheap model exactly when it needs the capable one.
+  // Production only counts as efficiency evidence to the extent the work is landing:
+  // credit is scaled down in proportion to the error rate, reaching zero when every
+  // recent result failed. Editing and running commands while tests fail is a struggle,
+  // not routine production. Without this scaling a spinning agent scores as
+  // "productive" and gets sent to the cheap model exactly when it needs the capable one.
   const rawProduction = classified > 0 ? clamp01(producing / classified) : 0;
   const productionIntensity = clamp01(rawProduction * (1 - errorSeverity));
 
