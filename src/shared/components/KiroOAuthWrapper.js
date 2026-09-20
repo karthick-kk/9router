@@ -10,7 +10,7 @@ import KiroSocialOAuthModal from "./KiroSocialOAuthModal";
  * Kiro OAuth Wrapper
  * Orchestrates between method selection, device code flow, and social login flow
  */
-export default function KiroOAuthWrapper({ isOpen, providerInfo, onSuccess, onClose }) {
+export default function KiroOAuthWrapper({ isOpen, provider = "kiro", providerInfo, onSuccess, onClose }) {
   const [authMethod, setAuthMethod] = useState(null); // null | "builder-id" | "idc" | "social" | "import"
   const [socialProvider, setSocialProvider] = useState(null); // "google" | "github"
   const [idcConfig, setIdcConfig] = useState(null);
@@ -58,6 +58,7 @@ export default function KiroOAuthWrapper({ isOpen, providerInfo, onSuccess, onCl
     return (
       <KiroAuthModal
         isOpen={isOpen}
+        provider={provider}
         onMethodSelect={handleMethodSelect}
         onClose={onClose}
       />
@@ -69,7 +70,7 @@ export default function KiroOAuthWrapper({ isOpen, providerInfo, onSuccess, onCl
     return (
       <OAuthModal
         isOpen={isOpen}
-        provider="kiro"
+        provider={provider}
         providerInfo={providerInfo}
         onSuccess={handleDeviceSuccess}
         onClose={handleBack}
@@ -95,6 +96,7 @@ export default function KiroOAuthWrapper({ isOpen, providerInfo, onSuccess, onCl
 
 KiroOAuthWrapper.propTypes = {
   isOpen: PropTypes.bool.isRequired,
+  provider: PropTypes.string,
   providerInfo: PropTypes.shape({
     name: PropTypes.string,
   }),

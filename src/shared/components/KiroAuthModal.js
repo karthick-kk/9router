@@ -8,7 +8,10 @@ import { Modal, Button, Input } from "@/shared/components";
  * Kiro Auth Method Selection Modal
  * Auto-detects token from AWS SSO cache or allows manual import
  */
-export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
+export default function KiroAuthModal({ isOpen, provider = "kiro", onMethodSelect, onClose }) {
+  // kiro-cli connects via the gateway; the import / API-key methods save to the
+  // legacy `kiro` provider's endpoints, so hide them there.
+  const isKiroCli = provider === "kiro-cli";
   const [selectedMethod, setSelectedMethod] = useState(null);
   const [idcStartUrl, setIdcStartUrl] = useState("");
   const [idcRegion, setIdcRegion] = useState("us-east-1");
@@ -183,7 +186,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
   };
 
   return (
-    <Modal isOpen={isOpen} title="Connect Kiro" onClose={onClose} size="lg">
+    <Modal isOpen={isOpen} title={isKiroCli ? "Connect Kiro CLI" : "Connect Kiro"} onClose={onClose} size="lg">
       <div className="flex flex-col gap-4">
         {/* Method Selection */}
         {!selectedMethod && (
@@ -224,7 +227,8 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
               </div>
             </button>
 
-            {/* AWS API Key */}
+            {/* AWS API Key — hidden for kiro-cli (legacy kiro endpoint) */}
+            {!isKiroCli && (
             <button
               onClick={() => handleMethodSelect("api-key")}
               className="w-full p-4 text-left border border-border rounded-lg hover:bg-sidebar transition-colors"
@@ -239,6 +243,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
                 </div>
               </div>
             </button>
+            )}
 
             {/* Google Social Login - HIDDEN */}
             <button
@@ -272,7 +277,8 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
               </div>
             </button>
 
-            {/* Import Token */}
+            {/* Import Token — hidden for kiro-cli (legacy kiro import endpoint) */}
+            {!isKiroCli && (
             <button
               onClick={() => handleMethodSelect("import")}
               className="w-full p-4 text-left border border-border rounded-lg hover:bg-sidebar transition-colors"
@@ -287,8 +293,10 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
                 </div>
               </div>
             </button>
+            )}
 
-            {/* Import CLIProxyAPI JSON */}
+            {/* Import CLIProxyAPI JSON — hidden for kiro-cli (legacy kiro endpoint) */}
+            {!isKiroCli && (
             <button
               onClick={() => handleMethodSelect("import-cli-proxy")}
               className="w-full p-4 text-left border border-border rounded-lg hover:bg-sidebar transition-colors"
@@ -303,6 +311,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
                 </div>
               </div>
             </button>
+            )}
           </div>
         )}
 
@@ -590,6 +599,7 @@ export default function KiroAuthModal({ isOpen, onMethodSelect, onClose }) {
 
 KiroAuthModal.propTypes = {
   isOpen: PropTypes.bool.isRequired,
+  provider: PropTypes.string,
   onMethodSelect: PropTypes.func.isRequired,
   onClose: PropTypes.func.isRequired,
 };
