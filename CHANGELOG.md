@@ -59,6 +59,19 @@
   combo. Routing state is per conversation and survives the many requests of a tool
   loop; a classifier failure resolves to the capable tier, a scorer failure keeps the
   current tier, and an unavailable efficient model falls back to capable
+- **Combo Adaptive — pick by health strategy** — an availability-first router for
+  combos of interchangeable models (e.g. several free endpoints that randomly go
+  down, slow, or rate-limit). Each model carries a live, decay-weighted health
+  record of its successes, failures, time-to-response and 429s; before every
+  request the combo's models are reordered by a Thompson-sampling score
+  (reliability × speed, with a decaying rate-limit penalty) so a sick model is
+  skipped *proactively* instead of after a request has already paid for the
+  failure. A model that recovers comes back on its own as its posterior re-inflates
+  — no timers, no hard bench. The existing failover loop is unchanged and remains
+  the backstop, so a wrong adaptive order degrades to the old behavior. Preset
+  (`reliable` / `balanced` / `fastest`) is configurable per combo; health is keyed
+  per model and shared across every combo that includes it, and it self-decays so
+  a bad hour does not pin a recovered model.
 
 # v0.5.69 (2026-09-05)
 

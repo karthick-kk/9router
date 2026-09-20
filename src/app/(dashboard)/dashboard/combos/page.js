@@ -313,9 +313,19 @@ export default function CombosPage() {
 const STRATEGY_OPTIONS = [
   { value: "fallback", label: "Fallback — try in order" },
   { value: "round-robin", label: "Round Robin — rotate" },
+  { value: "adaptive", label: "Adaptive — pick by health" },
   { value: "fusion", label: "Fusion — panel + judge" },
   { value: "jev", label: "Jev — classify per request" },
   { value: "composite-stage", label: "Composite — Capable First" },
+];
+
+// Presets for the adaptive strategy (mirrors ADAPTIVE_PRESETS in
+// open-sse/services/combo/adaptive-scoring.js). Display order matches the
+// emphasis each preset puts on reliability vs. speed.
+const ADAPTIVE_PRESET_OPTIONS = [
+  { value: "reliable", label: "Reliable — favor uptime (default)" },
+  { value: "balanced", label: "Balanced — split uptime / speed" },
+  { value: "fastest", label: "Fastest — favor low latency" },
 ];
 
 const PICKER_OPTIONS = [
@@ -397,6 +407,7 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
   // Local typing state for rubric inputs; merged into settings on blur.
   const [jevDraft, setJevDraft] = useState({});
   const isComposite = current === "composite-stage";
+  const isAdaptive = current === "adaptive";
 
   return (
     <Card padding="sm" className="group">
@@ -458,6 +469,18 @@ function ComboCard({ combo, getCaps, activeProviders = [], copied, onCopy, onEdi
               onChange={(e) => onSetStrategy({ fallbackStrategy: e.target.value })}
               selectClassName="py-1.5 text-xs"
             />
+            {/* Adaptive preset — only relevant when the strategy is adaptive */}
+            {isAdaptive && (
+              <div className="mt-2 flex flex-col gap-1">
+                <span className="text-[11px] font-medium text-text-muted">Emphasis</span>
+                <Select
+                  options={ADAPTIVE_PRESET_OPTIONS}
+                  value={strategy.adaptivePreset || "reliable"}
+                  onChange={(e) => onSetStrategy({ adaptivePreset: e.target.value })}
+                  selectClassName="py-1 text-[11px]"
+                />
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-3 gap-1 sm:flex">
