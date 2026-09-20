@@ -37,6 +37,10 @@ async function peekComboResponse(result, log) {
   return { outcome: peeked.outcome, finishReason: peeked.finishReason, timedOut: peeked.timedOut, response };
 }
 
+// Jev classifier strategy lives in ./combo/ but is re-exported here so callers
+// keep importing every combo strategy from one module.
+export { orderModelsByJev } from "./combo/jev.js";
+
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
 const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
