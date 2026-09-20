@@ -602,10 +602,6 @@ function ComboEfficiencyCard() {
   const available = payload?.available || [];
   const combos = payload?.combos || [];
 
-  // Stay hidden until some combo traffic exists, so the card is never an empty
-  // shell for users who don't run combos. An error must still surface, though.
-  if (!loading && !result.error && available.length === 0) return null;
-
   const comboOptions = [
     { value: ALL_COMBOS, label: `All combos${available.length > 1 ? ` (${available.length})` : ""}` },
     ...available.map((c) => ({ value: c, label: c })),
@@ -647,7 +643,12 @@ function ComboEfficiencyCard() {
         <p className="py-6 text-sm text-error">Could not load combo efficiency: {result.error}</p>
       ) : combos.length === 0 ? (
         <p className="py-6 text-sm text-text-muted">
-          No combo-attributed usage in this period. Pick a longer window, or send traffic to a combo.
+          {available.length === 0
+            // Nothing tagged in any window: either no combo traffic has been served,
+            // or it predates combo attribution. Telling this user to widen the window
+            // would be dead-end advice, so say what actually populates the card.
+            ? "No combo usage recorded yet. Set a combo's strategy on the Combos page, then send traffic to it — routed turns appear here."
+            : "No combo-attributed usage in this period. Try a longer window."}
         </p>
       ) : (
         combos.map((c) => <ComboEfficiencyBlock key={c.combo} data={c} />)
