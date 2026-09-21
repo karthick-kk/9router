@@ -156,6 +156,29 @@ export const TABLES = {
       "CREATE INDEX IF NOT EXISTS idx_rd_conn ON requestDetails(connectionId)",
     ],
   },
+  routingDecisions: {
+    columns: {
+      id: "TEXT PRIMARY KEY",
+      timestamp: "INTEGER NOT NULL",
+      combo: "TEXT NOT NULL",
+      strategy: "TEXT NOT NULL",
+      sessionId: "TEXT",
+      turn: "INTEGER DEFAULT 1",
+      source: "TEXT NOT NULL",
+      reason: "TEXT",
+      picked: "TEXT",
+      confidence: "REAL",
+      scores: "TEXT",
+      preview: "TEXT",
+      classifierMs: "INTEGER",
+      outcome: "TEXT",
+    },
+    indexes: [
+      "CREATE INDEX IF NOT EXISTS idx_rdcom_combo_ts ON routingDecisions(combo, timestamp DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_rdcom_ts ON routingDecisions(timestamp DESC)",
+      "CREATE INDEX IF NOT EXISTS idx_rdcom_session ON routingDecisions(combo, sessionId, turn)",
+    ],
+  },
 };
 
 export function buildCreateTableSql(name, def) {
