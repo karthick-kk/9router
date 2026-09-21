@@ -326,6 +326,35 @@ describe("handleCompositeStageChat routing", () => {
   });
 });
 
+describe("decision capture", () => {
+  const base = {
+    body: { messages: [{ role: "user", content: "hello world" }] },
+    models: ["9eric/Capable", "9eric/Efficient"],
+    handleSingleModel: vi.fn(async () => ({ ok: true, status: 200, clone: () => ({ json: async () => ({}) }) })),
+    log: { warn() {}, info() {}, debug() {} },
+    comboName: "eric-moa",
+    sessionId: "sess-c",
+    config: { classifier: { enabled: false }, stage: { enabled: false } },
+  };
+
+  it("emits one decision with tier + reason, then a served outcome", async () => {
+    const onDecision = vi.fn(), onServed = vi.fn();
+    await handleCompositeStageChat({ ...base, onDecision, onServed });
+    expect(onDecision).toHaveBeenCalledTimes(1);
+    expect(onDecision.mock.calls[0][0]).toMatchObject({
+      combo: "eric-moa", strategy: "composite-stage", sessionId: "sess-c",
+      turn: 1, source: "picker-default", reason: "no classifier model",
+      picked: expect.any(String),
+    });
+    expect(onServed).toHaveBeenCalledTimes(1);
+    expect(onServed.mock.calls[0][0]).toMatchObject({ success: true, fellOver: false });
+  });
+
+  it("does not throw if onDecision throws", async () => {
+    await expect(handleCompositeStageChat({ ...base, onDecision: () => { throw new Error("boom"); } })).resolves.toBeDefined();
+  });
+});
+
 describe("tool-loop and streaming preservation", () => {
   it("passes the body through untouched to the routed model", async () => {
     const h = makeHandler({ tier: "EFFICIENT", confidence: 0.95 });

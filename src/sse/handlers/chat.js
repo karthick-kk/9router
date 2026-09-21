@@ -15,7 +15,9 @@ import { DEFAULT_HEADROOM_URL } from "@/lib/headroom/detect";
 import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
-import { handleComboChat, handleFusionChat, handleCompositeStageChat, detectRequiredCapabilities, orderModelsByJev } from "open-sse/services/combo.js";
+import { handleComboChat, handleFusionChat, handleCompositeStageChat, detectRequiredCapabilities, orderModelsByJev, extractTurn } from "open-sse/services/combo.js";
+import { getRoutingState } from "open-sse/services/combo/session-state.js";
+import { recordDecision, backfillOutcome } from "@/lib/db/repos/routingDecisionsRepo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
 import { handleBypassRequest } from "open-sse/utils/bypassHandler.js";
 import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
@@ -59,6 +61,11 @@ function dispatchCompositeStage({ body, modelStr, models, comboStrategies, clien
     ? { ...clientRawRequest, combo: modelStr, comboStrategy: "composite-stage" }
     : null;
 
+  // Per-request decision holder: onDecision fills it, onServed backfills it.
+  // Composite never shares a holder with the Jev path — a composite request only
+  // goes through dispatchCompositeStage.
+  const decision = { id: null };
+
   return handleCompositeStageChat({
     body,
     models,
@@ -76,6 +83,9 @@ function dispatchCompositeStage({ body, modelStr, models, comboStrategies, clien
     comboName: modelStr,
     sessionId: comboSessionId(request, body),
     config: comboStrategies[modelStr]?.composite,
+    onDecision: (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
+    // The handler measures its own latencyMs, so the outcome passes through as-is.
+    onServed: (outcome) => { backfillOutcome(decision.id, outcome); },
   });
 }
 
@@ -153,6 +163,15 @@ export async function handleChat(request, clientRawRequest = null) {
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
+    // Per-request decision holder: the Jev capture (below) fills it, and the
+    // onServed hook (Task 4) backfills it after the response.
+    const decision = { id: null };
+    const sid = comboSessionId(request, body);
+    const { continuation } = extractTurn(body);
+    const st = sid ? getRoutingState(modelStr, sid) : null;
+    // composite-stage owns its own counter (handleCompositeStageChat increments
+    // state.turnCounter per request) — incrementing here too would double-count.
+    if (st && !continuation && comboStrategy !== "composite-stage") st.turnCounter += 1;
     let routedModels = comboModels;
     if (comboStrategy === "jev") {
       routedModels = (await orderModelsByJev({
@@ -161,6 +180,10 @@ export async function handleChat(request, clientRawRequest = null) {
         rubrics: comboStrategies[modelStr]?.jevRubrics,
         cfg: { apiKey: settings.jevApiKey, url: settings.jevUrl, timeoutMs: settings.jevTimeoutMs, confidenceGate: settings.jevConfidenceGate, mode: comboStrategies[modelStr]?.jevMode, lowConfidence: comboStrategies[modelStr]?.jevLowConfidence },
         log,
+        comboName: modelStr,
+        sessionId: sid,
+        turn: st ? st.turnCounter : 1,
+        onDecision: (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
       })) || comboModels;
     }
     const augmentedModels = augmentModelsWithCapacityAdapter(routedModels, requiredCapabilities, settings);
@@ -183,6 +206,10 @@ export async function handleChat(request, clientRawRequest = null) {
         comboName: modelStr,
         judgeModel: comboStrategies[modelStr]?.judgeModel,
         tuning: comboStrategies[modelStr]?.fusionTuning,
+        onDecision: (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
+        onServed: (outcome) => { backfillOutcome(decision.id, outcome); },
+        decisionSessionId: sid,
+        decisionTurn: st ? st.turnCounter : 1,
       });
     }
 
@@ -210,6 +237,12 @@ export async function handleChat(request, clientRawRequest = null) {
       // not the global strategy — one combo can run adaptive "fastest" while another
       // runs "reliable". Null → adaptive-scoring's default ("reliable").
       adaptivePreset: comboStrategies[modelStr]?.adaptivePreset,
+      // Jev already records its own decision (orderModelsByJev) — a second record
+      // here would double-count. The backfill still runs against the Jev id.
+      onDecision: comboStrategy === "jev" ? undefined : (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
+      onServed: (outcome) => { backfillOutcome(decision.id, outcome); },
+      decisionSessionId: sid,
+      decisionTurn: st ? st.turnCounter : 1,
     });
   }
 
@@ -219,6 +252,15 @@ export async function handleChat(request, clientRawRequest = null) {
   if (soloAugmented.length > 1) {
     const adapterAdded = soloAugmented.filter((m) => m !== modelStr);
     log.info("CHAT", `Capacity adapter for [${[...requiredCapabilities].join(",")}] on "${modelStr}" → trying ${soloAugmented.join(", ")}`);
+    const comboStrategy = getActiveAdapterStrategy(requiredCapabilities, settings);
+    // Per-request decision holder, same shape as the combo branch above. The
+    // adapter strategy is never "jev"/"composite-stage", so the guards below are
+    // inert but keep the call identical to the other handleComboChat site.
+    const decision = { id: null };
+    const sid = comboSessionId(request, body);
+    const { continuation } = extractTurn(body);
+    const st = sid ? getRoutingState(modelStr, sid) : null;
+    if (st && !continuation && comboStrategy !== "composite-stage") st.turnCounter += 1;
     return handleComboChat({
       body,
       models: soloAugmented,
@@ -228,7 +270,11 @@ export async function handleChat(request, clientRawRequest = null) {
       ),
       log,
       comboName: modelStr,
-      comboStrategy: getActiveAdapterStrategy(requiredCapabilities, settings)
+      comboStrategy,
+      onDecision: comboStrategy === "jev" ? undefined : (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
+      onServed: (outcome) => { backfillOutcome(decision.id, outcome); },
+      decisionSessionId: sid,
+      decisionTurn: st ? st.turnCounter : 1,
     });
   }
 
@@ -251,6 +297,15 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
       const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
       const requiredCapabilities = detectRequiredCapabilities(body);
+      // Per-request decision holder: the Jev capture (below) fills it, and the
+      // onServed hook (Task 4) backfills it after the response.
+      const decision = { id: null };
+      const sid = comboSessionId(request, body);
+      const { continuation } = extractTurn(body);
+      const st = sid ? getRoutingState(modelStr, sid) : null;
+      // composite-stage owns its own counter (handleCompositeStageChat increments
+      // state.turnCounter per request) — incrementing here too would double-count.
+      if (st && !continuation && comboStrategy !== "composite-stage") st.turnCounter += 1;
       let routedModels = comboModels;
       if (comboStrategy === "jev") {
         routedModels = (await orderModelsByJev({
@@ -259,6 +314,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           rubrics: comboStrategies[modelStr]?.jevRubrics,
           cfg: { apiKey: chatSettings.jevApiKey, url: chatSettings.jevUrl, timeoutMs: chatSettings.jevTimeoutMs, confidenceGate: chatSettings.jevConfidenceGate, mode: comboStrategies[modelStr]?.jevMode, lowConfidence: comboStrategies[modelStr]?.jevLowConfidence },
           log,
+          comboName: modelStr,
+          sessionId: sid,
+          turn: st ? st.turnCounter : 1,
+          onDecision: (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
         })) || comboModels;
       }
       const augmentedModels = augmentModelsWithCapacityAdapter(routedModels, requiredCapabilities, chatSettings);
@@ -281,6 +340,10 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
           comboName: modelStr,
           judgeModel: comboStrategies[modelStr]?.judgeModel,
           tuning: comboStrategies[modelStr]?.fusionTuning,
+          onDecision: (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
+          onServed: (outcome) => { backfillOutcome(decision.id, outcome); },
+          decisionSessionId: sid,
+          decisionTurn: st ? st.turnCounter : 1,
         });
       }
 
@@ -306,6 +369,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         comboStickyLimit,
         // Per-combo adaptive preset; null → adaptive-scoring's default ("reliable").
         adaptivePreset: comboStrategies[modelStr]?.adaptivePreset,
+        // Jev already records its own decision (orderModelsByJev) — a second record
+        // here would double-count. The backfill still runs against the Jev id.
+        onDecision: comboStrategy === "jev" ? undefined : (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
+        onServed: (outcome) => { backfillOutcome(decision.id, outcome); },
+        decisionSessionId: sid,
+        decisionTurn: st ? st.turnCounter : 1,
       });
     }
     log.warn("CHAT", "Invalid model format", { model: modelStr });
