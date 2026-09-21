@@ -7,7 +7,7 @@ import { unavailableResponse } from "../utils/error.js";
 import { getCapabilitiesForModel } from "../providers/capabilities.js";
 import { extractTextContent } from "../translator/formats/gemini.js";
 import { resetRoutingState } from "./combo/session-state.js";
-import { orderAdaptiveModels, recordAttempt } from "./combo/adaptive.js";
+import { orderAdaptiveModels, recordAttempt, getAdaptiveStats } from "./combo/adaptive.js";
 
 // Composite-stage strategy lives in ./combo/ but is re-exported here so callers keep
 // importing every combo strategy from one module.
@@ -16,7 +16,7 @@ export { orderAdaptiveModels, recordAttempt, resetAdaptiveState } from "./combo/
 
 // Jev classifier strategy lives in ./combo/ but is re-exported here so callers
 // keep importing every combo strategy from one module.
-export { orderModelsByJev } from "./combo/jev.js";
+export { orderModelsByJev, extractTurn } from "./combo/jev.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.
@@ -301,9 +301,16 @@ export function getComboModelsFromData(modelStr, combosData) {
  * @param {number|string} [options.comboStickyLimit=1] - Requests per combo model before switching
  * @param {string|object} [options.adaptivePreset] - Adaptive routing preset ("reliable" |
  *   "balanced" | "fastest") or a custom {reliability, speed} weight pair
+ * @param {Function} [options.onDecision] - Called once with the routing decision record
+ *   (after all reordering, so `picked` is the model tried first)
+ * @param {Function} [options.onServed] - Called once at each terminal return with the
+ *   served-outcome record
+ * @param {string|null} [options.decisionSessionId] - Session id to stamp on the decision
+ * @param {number} [options.decisionTurn=1] - Turn number to stamp on the decision
  * @returns {Promise<Response>}
  */
-export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, adaptivePreset = null }) {
+export async function handleComboChat({ body, models, handleSingleModel, log, comboName, comboStrategy, comboStickyLimit = 1, autoSwitch = true, adaptivePreset = null, onDecision, onServed, decisionSessionId = null, decisionTurn = 1 }) {
+  const safeEmit = (fn, arg) => { if (typeof fn === "function") { try { fn(arg); } catch { /* fail-open */ } } };
   // Apply rotation strategy if enabled
   let rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
 
@@ -333,6 +340,19 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
     rotatedModels = adaptiveOrder;
   }
 
+  // Decision capture: the order is final after adaptive reordering.
+  const decisionScores = adaptiveEnabled
+    ? { stats: getAdaptiveStats(rotatedModels[0], Date.now()), preset: typeof adaptivePreset === "string" ? adaptivePreset : "custom", order: rotatedModels }
+    : { order: rotatedModels };
+  safeEmit(onDecision, {
+    combo: comboName, strategy: adaptiveEnabled ? "adaptive" : comboStrategy,
+    sessionId: decisionSessionId, turn: decisionTurn,
+    source: adaptiveEnabled ? "adaptive" : "static",
+    reason: adaptiveEnabled ? "thompson-sampled" : (comboStrategy === "round-robin" ? "round-robin" : "combo-order"),
+    picked: rotatedModels[0], confidence: null, scores: decisionScores, preview: "", classifierMs: null,
+  });
+
+  const loopStart = Date.now();
   let lastError = null;
   let earliestRetryAfter = null;
   let lastStatus = null;
@@ -355,6 +375,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       if (result.ok) {
         if (adaptiveEnabled) recordAttempt(modelStr, true, { latencyMs: Date.now() - attemptStart });
         log.info("COMBO", `Model ${modelStr} succeeded`);
+        safeEmit(onServed, { served: modelStr, success: true, fellOver: i > 0, fellOverTo: null, status: result.status ?? 200, latencyMs: Date.now() - loopStart });
         return result;
       }
 
@@ -385,6 +406,7 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
       if (!shouldFallback) {
         if (adaptiveEnabled) recordAttempt(modelStr, false, { rateLimited: isRateLimit(result.status, errorText) });
         log.warn("COMBO", `Model ${modelStr} failed (no fallback)`, { status: result.status });
+        safeEmit(onServed, { served: modelStr, success: false, fellOver: i > 0, fellOverTo: null, status: result.status, latencyMs: Date.now() - loopStart });
         return result;
       }
 
@@ -419,13 +441,17 @@ export async function handleComboChat({ body, models, handleSingleModel, log, co
   const status = allDisabled ? 503 : (lastStatus || 503);
   const msg = lastError || "All combo models unavailable";
 
+  const allFailedOutcome = { served: null, success: false, fellOver: rotatedModels.length > 1, fellOverTo: null, status, latencyMs: Date.now() - loopStart };
+
   if (earliestRetryAfter) {
     const retryHuman = formatRetryAfter(earliestRetryAfter);
     log.warn("COMBO", `All models failed | ${msg} (${retryHuman})`);
+    safeEmit(onServed, allFailedOutcome);
     return unavailableResponse(status, msg, earliestRetryAfter, retryHuman);
   }
 
   log.warn("COMBO", `All models failed | ${msg}`);
+  safeEmit(onServed, allFailedOutcome);
   return new Response(
     JSON.stringify({ error: { message: msg } }),
     { status, headers: { "Content-Type": "application/json" } }
@@ -593,11 +619,44 @@ function collectPanel(calls, { minPanel, stragglerGraceMs, panelHardTimeoutMs })
  * @param {string} [options.comboName] - Combo name (logging)
  * @param {string} [options.judgeModel] - Judge model; falls back to panel[0]
  * @param {Object} [options.tuning] - Override FUSION_DEFAULTS (minPanel, grace, timeout)
+ * @param {Function} [options.onDecision] - Called once with the routing decision record
+ *   (after the judge is chosen, before the panel fan-out; not called on the
+ *   400 / single-panel early returns)
+ * @param {Function} [options.onServed] - Called once at each terminal return with the
+ *   served-outcome record
+ * @param {string|null} [options.decisionSessionId] - Session id to stamp on the decision
+ * @param {number} [options.decisionTurn=1] - Turn number to stamp on the decision
  * @returns {Promise<Response>}
  */
-export async function handleFusionChat({ body, models, handleSingleModel, log, comboName, judgeModel, tuning }) {
+
+// Newest user text in the conversation, for the decision record preview: the last
+// `role === "user"` message, string content as-is, or the joined `{ type: "text" }`
+// parts when content is an array. Sliced to 200 chars.
+function newestUserPreview(messages) {
+  if (!Array.isArray(messages)) return "";
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i];
+    if (!msg || msg.role !== "user") continue;
+    const c = msg.content;
+    if (typeof c === "string") return c.slice(0, 200);
+    if (Array.isArray(c)) {
+      const text = c
+        .filter((p) => p && p.type === "text" && typeof p.text === "string")
+        .map((p) => p.text)
+        .join("");
+      if (text) return text.slice(0, 200);
+    }
+    return "";
+  }
+  return "";
+}
+
+export async function handleFusionChat({ body, models, handleSingleModel, log, comboName, judgeModel, tuning, onDecision, onServed, decisionSessionId = null, decisionTurn = 1 }) {
+  const safeEmit = (fn, arg) => { if (typeof fn === "function") { try { fn(arg); } catch { /* fail-open */ } } };
+  const t0 = Date.now();
   const panel = Array.isArray(models) ? models.filter(Boolean) : [];
   if (panel.length === 0) {
+    safeEmit(onServed, { served: null, success: false, fellOver: false, fellOverTo: null, status: 400, latencyMs: Date.now() - t0 });
     return new Response(
       JSON.stringify({ error: { message: "Fusion combo has no models" } }),
       { status: 400, headers: { "Content-Type": "application/json" } }
@@ -606,13 +665,23 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
 
   // A single-model fusion has nothing to fuse — just answer directly.
   if (panel.length === 1) {
-    return handleSingleModel(body, panel[0]);
+    const res = await handleSingleModel(body, panel[0]);
+    safeEmit(onServed, { served: panel[0], success: res?.ok, fellOver: false, fellOverTo: null, status: res?.status ?? null, latencyMs: Date.now() - t0 });
+    return res;
   }
 
   const cfg = { ...FUSION_DEFAULTS, ...(tuning || {}) };
   const minPanel = Math.min(Math.max(2, cfg.minPanel), panel.length);
   const judge = judgeModel && judgeModel.trim() ? judgeModel.trim() : panel[0];
   log.info("FUSION", `Combo "${comboName}" | panel=${panel.length} [${panel.join(", ")}] | judge=${judge} | quorum=${minPanel}`);
+  // Decision capture: the judge choice is final; this is what gets recorded as
+  // the routing decision (the panel answers and the judge synthesis follow it).
+  safeEmit(onDecision, {
+    combo: comboName, strategy: "fusion", sessionId: decisionSessionId, turn: decisionTurn,
+    source: "fusion-judge",
+    reason: judgeModel ? "judge-configured" : "judge-auto",
+    picked: judge, confidence: null, scores: { panel }, preview: newestUserPreview(body.messages), classifierMs: null,
+  });
 
   // 1. Fan out to the panel in parallel: non-streaming, tools stripped (we want prose).
   const { tools, tool_choice, stream_options, ...rest } = body;
@@ -628,7 +697,6 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
     panelBody.input = flattenToolHistory(panelBody.input);
   }
 
-  const t0 = Date.now();
   const calls = panel.map((m) => withTimeout(handleSingleModel(panelBody, m, true), cfg.panelHardTimeoutMs));
   const settled = await collectPanel(calls, { ...cfg, minPanel });
   log.info("FUSION", `fan-out collected in ${Date.now() - t0}ms`);
@@ -659,6 +727,7 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   // 3. Degrade gracefully when the panel is too thin to fuse.
   if (answers.length === 0) {
     log.warn("FUSION", "All panel models failed");
+    safeEmit(onServed, { served: null, success: false, fellOver: false, fellOverTo: null, status: 503, latencyMs: Date.now() - t0 });
     return new Response(
       JSON.stringify({ error: { message: "All fusion panel models failed" } }),
       { status: 503, headers: { "Content-Type": "application/json" } }
@@ -666,11 +735,15 @@ export async function handleFusionChat({ body, models, handleSingleModel, log, c
   }
   if (answers.length === 1) {
     log.info("FUSION", `Only ${answers[0].model} succeeded — answering directly (no fusion)`);
-    return handleSingleModel(body, answers[0].model);
+    const res = await handleSingleModel(body, answers[0].model);
+    safeEmit(onServed, { served: answers[0].model, success: res?.ok, fellOver: false, fellOverTo: null, status: res?.status ?? null, latencyMs: Date.now() - t0 });
+    return res;
   }
 
   // 4. Judge analyzes + writes one final answer (streams to client if requested).
   const judgeBody = appendUserTurn(body, buildJudgePrompt(answers));
   log.info("FUSION", `Judging ${answers.length} answers with ${judge}`);
-  return handleSingleModel(judgeBody, judge);
+  const res = await handleSingleModel(judgeBody, judge);
+  safeEmit(onServed, { served: judge, success: res?.ok, fellOver: false, fellOverTo: null, status: res?.status ?? null, latencyMs: Date.now() - t0 });
+  return res;
 }

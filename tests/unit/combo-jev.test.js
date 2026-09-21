@@ -137,3 +137,95 @@ describe("jev combo classifier", () => {
     delete process.env.TYPESAFE_API_KEY;
   });
 });
+
+describe("decision capture", () => {
+  const opts = (over = {}) => ({
+    body: { messages: [{ role: "user", content: "fix the login bug" }] },
+    models: ["9eric/A", "9eric/B"],
+    cfg: { apiKey: "k", timeoutMs: 1000 },
+    log: { warn() {}, info() {} },
+    onDecision: vi.fn(),
+    ...over,
+  });
+
+  it.each([
+    // [stub answers.route (or null), cfg, expectedReason, expectedConfidence, expectedOrder]
+    [{ type: "choice", choice: "9eric/B", confidence: 0.9, probabilities: { "9eric/B": 0.9, "9eric/A": 0.1 } }, {}, "classified", 0.9, ["9eric/B", "9eric/A"]],
+    [{ type: "choice", choice: "9eric/B", confidence: 0.2 }, {}, "below-gate-held", 0.2, null],
+    [{ type: "choice", choice: "9eric/B", confidence: 0.2, probabilities: { "9eric/B": 0.6, "9eric/A": 0.4 } }, { lowConfidence: "rank" }, "ranked", 0.2, ["9eric/B", "9eric/A"]],
+    [null, {}, "no-usable-choice", null, null],
+  ])("route %o → reason %s", async (answer, cfgExtra, reason, confidence, expectedOrder) => {
+    const onDecision = vi.fn();
+    global.fetch = answer === null
+      ? vi.fn(async () => ({ ok: true, json: async () => ({}) }))
+      : vi.fn(async () => ({ ok: true, json: async () => ({ answers: { route: answer } }) }));
+    const out = await orderModelsByJev(opts({ cfg: { apiKey: "k", timeoutMs: 1000, ...cfgExtra }, onDecision, turn: 2, comboName: "jev-eric", sessionId: "s1" }));
+    expect(out).toEqual(expectedOrder);
+    expect(onDecision).toHaveBeenCalledTimes(1);
+    const rec = onDecision.mock.calls[0][0];
+    expect(rec).toMatchObject({
+      combo: "jev-eric", strategy: "jev", sessionId: "s1", turn: 2,
+      source: "jev", reason, confidence,
+      preview: "fix the login bug",
+    });
+    expect(rec.picked).toBeTruthy();
+    expect(Number.isFinite(rec.classifierMs)).toBe(true); // fetch was called in these paths
+  });
+
+  it("fetch throws → error reason, fail-open still returns null", async () => {
+    const onDecision = vi.fn();
+    global.fetch = vi.fn(async () => { throw new Error("aborted"); });
+    const out = await orderModelsByJev(opts({ onDecision, comboName: "c" }));
+    expect(out).toBeNull();
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "jev", reason: "error" });
+  });
+
+  it("fetch throws TimeoutError → timeout reason", async () => {
+    const onDecision = vi.fn();
+    const te = new Error("aborted");
+    te.name = "TimeoutError";
+    global.fetch = vi.fn(async () => { throw te; });
+    const out = await orderModelsByJev(opts({ onDecision, comboName: "c" }));
+    expect(out).toBeNull();
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "jev", reason: "timeout" });
+  });
+
+  it("HTTP 500 → http-500 reason", async () => {
+    const onDecision = vi.fn();
+    global.fetch = vi.fn(async () => ({ ok: false, status: 500 }));
+    await orderModelsByJev(opts({ onDecision, comboName: "c" }));
+    expect(onDecision.mock.calls[0][0].reason).toBe("http-500");
+  });
+
+  it("no API key → no-api-key reason, picked = first model, no fetch", async () => {
+    const onDecision = vi.fn();
+    global.fetch = vi.fn();
+    const out = await orderModelsByJev(opts({ cfg: {}, onDecision, comboName: "c" }));
+    expect(out).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "jev", reason: "no-api-key", picked: "9eric/A", classifierMs: null });
+  });
+
+  it("single model → single-model reason, picked = that model, no fetch", async () => {
+    const onDecision = vi.fn();
+    global.fetch = vi.fn();
+    const out = await orderModelsByJev(opts({ models: ["9eric/A"], onDecision, comboName: "c" }));
+    expect(out).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "jev", reason: "single-model", picked: "9eric/A", classifierMs: null });
+  });
+
+  it("no user text → no-user-text reason, no fetch", async () => {
+    const onDecision = vi.fn();
+    global.fetch = vi.fn();
+    const out = await orderModelsByJev(opts({ body: { messages: [{ role: "user", content: "  " }] }, onDecision, comboName: "c" }));
+    expect(out).toBeNull();
+    expect(global.fetch).not.toHaveBeenCalled();
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "jev", reason: "no-user-text", picked: "9eric/A", classifierMs: null });
+  });
+
+  it("never throws out of the decision path even if onDecision throws", async () => {
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ answers: { route: { type: "choice", choice: "9eric/B", confidence: 0.9 } } }) }));
+    await expect(orderModelsByJev(opts({ onDecision: () => { throw new Error("boom"); }, comboName: "c" }))).resolves.toEqual(["9eric/B", "9eric/A"]);
+  });
+});
