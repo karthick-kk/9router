@@ -38,6 +38,10 @@ services:
       NODE_ENV: production
       HEADROOM_URL: http://host.docker.internal:8788
       SEARXNG_URL: http://127.0.0.1:8080/search
+      # Cap time-to-headers from upstreams: a hanging/dead backend then costs
+      # ~69s worst case (4 attempts x 15s + retry delays) instead of ~249s at
+      # the 60s default, so in-request combo failover is near-instant.
+      FETCH_CONNECT_TIMEOUT_MS: "15000"
       STREAM_STALL_TIMEOUT_MS: "120000"
       QDRANT_URL: http://127.0.0.1:6333
     depends_on:

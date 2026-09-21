@@ -13,6 +13,10 @@ import { aggregateComboCapabilities } from "open-sse/providers/capabilities.js";
 // Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
 
+// Probe-frequency slider steps for the per-combo health monitor (minutes).
+// Log-spaced: a linear 1..60 range would be too coarse at the low end.
+const HEALTH_INTERVAL_STEPS = [1, 2, 5, 10, 15, 30, 60];
+
 // Capacity adapter: global fallback pools of models per input-modality capability.
 // A request needing a capability the target model/combo lacks switches straight
 // to the first enabled model here instead of erroring or dropping the data.
@@ -319,8 +323,12 @@ export default function CombosPage() {
     try {
       const updated = { ...comboStrategies };
       const next = { ...(updated[comboName] || {}), ...patch };
-      // Prune to keep settings clean: default fallback with no extras = no entry.
-      if (!next.fallbackStrategy || next.fallbackStrategy === "fallback") {
+      // Prune to keep settings clean: default fallback with no per-combo extras =
+      // no entry. Health-monitor settings (health: false / healthIntervalMin) are
+      // meaningful extras that must survive a "fallback" strategy, so prune only
+      // when nothing besides a default fallbackStrategy is set.
+      const hasExtras = Object.entries(next).some(([k, v]) => k !== "fallbackStrategy" && v !== undefined);
+      if ((!next.fallbackStrategy || next.fallbackStrategy === "fallback") && !hasExtras) {
         delete updated[comboName];
       } else {
         updated[comboName] = next;
@@ -678,6 +686,17 @@ const comboCaps = aggregateComboCapabilities(combo.models, comboByName);
   // Local typing state for rubric inputs; merged into settings on blur.
   const [jevDraft, setJevDraft] = useState({});
 
+  // Health monitor: default-on; absent/invalid values fall back to the
+  // scheduler defaults (enabled, 60 min). Display snaps to the nearest
+  // slider step so a legacy off-step value can't leave the slider orphaned.
+  const healthOn = strategy.health !== false;
+  const rawInterval = Number(strategy.healthIntervalMin);
+  const healthIntervalMin = Number.isFinite(rawInterval) && rawInterval > 0 ? rawInterval : 60;
+  const intervalStepIndex = HEALTH_INTERVAL_STEPS.reduce(
+    (best, step, i) => (Math.abs(step - healthIntervalMin) < Math.abs(HEALTH_INTERVAL_STEPS[best] - healthIntervalMin) ? i : best),
+    0
+  );
+
   return (
     <Card padding="sm" className={`group ${selected ? "ring-1 ring-primary/40 bg-primary/[0.03]" : ""}`}>
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -716,11 +735,40 @@ const comboCaps = aggregateComboCapabilities(combo.models, comboByName);
                 <span className="text-[10px] text-text-muted">+{combo.models.length - 3} more</span>
               )}
             </div>
-            {comboCaps && (
+{comboCaps && (
               <div className="mt-1 flex items-center gap-2 text-[10px] text-text-muted">
                 <span>ctx {fmtK(comboCaps.contextWindow)}</span>
                 <span className="opacity-40">·</span>
                 <span>max {fmtK(comboCaps.maxOutput)}</span>
+              </div>
+            )}
+            {/* Health monitor: probe members for reachability so dead models are
+                evicted from routing instead of eating connect timeouts. */}
+            {combo.models.length > 0 && (
+              <div className="mt-2 flex flex-wrap items-center gap-3">
+                <Toggle
+                  size="sm"
+                  checked={healthOn}
+                  onChange={(v) => onSetStrategy({ health: v })}
+                  label="Health monitor"
+                />
+                {healthOn && (
+                  <div className="flex items-center gap-2" title="How often each member is probed">
+                    <span className="text-[10px] text-text-muted shrink-0">Probe every</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={HEALTH_INTERVAL_STEPS.length - 1}
+                      step={1}
+                      value={intervalStepIndex}
+                      onChange={(e) => onSetStrategy({ healthIntervalMin: HEALTH_INTERVAL_STEPS[Number(e.target.value)] })}
+                      className="h-1 w-24 cursor-pointer accent-brand-500"
+                    />
+                    <span className="text-[10px] font-medium text-text-main tabular-nums w-14 shrink-0">
+                      {HEALTH_INTERVAL_STEPS[intervalStepIndex]} min
+                    </span>
+                  </div>
+                )}
               </div>
             )}
             {/* Fusion: judge picker (Auto = first model) */}
