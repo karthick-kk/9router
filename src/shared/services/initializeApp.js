@@ -118,6 +118,12 @@ async function runHeavyStartup() {
   import("@/sse/services/backgroundTokenRefresh.js")
     .then(({ startBackgroundTokenRefresh }) => startBackgroundTokenRefresh())
     .catch((e) => console.log("[BackgroundTokenRefresh] scheduler start failed:", e.message));
+
+  // Combo model reachability ticker: evicts offline models from routing so a
+  // dead upstream can't burn the full combo timeout on every request.
+  import("@/sse/services/comboHealthScheduler.js")
+    .then(({ startComboHealthScheduler }) => startComboHealthScheduler())
+    .catch((e) => console.log("[ComboHealth] scheduler start failed:", e.message));
 }
 
 function hasQuotaAutoPingEnabled(settings) {

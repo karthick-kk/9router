@@ -2,6 +2,7 @@
 import { getModelAliases, getComboByName, getProviderNodes } from "@/lib/localDb";
 import { parseModel as parseModelCore, resolveModelAliasFromMap, getModelInfoCore } from "open-sse/services/model.js";
 import REGISTRY from "open-sse/providers/registry/index.js";
+import { filterOfflineModels } from "./comboHealth.js";
 
 // Local provider alias overrides (HMR-friendly, applied on top of open-sse map)
 const LOCAL_PROVIDER_ALIASES = {
@@ -88,7 +89,11 @@ export async function getComboModels(modelStr) {
 
   const combo = await getComboByName(modelStr);
   if (combo && combo.models && combo.models.length > 0) {
-    return combo.models;
+    // Health overlay: skip models the reachability ticker marked offline.
+    // Never returns an empty list (filter keeps the full order if all are
+    // offline), so a combo with everything down still gets the normal
+    // all-failed 503 from the fallback loop.
+    return filterOfflineModels(combo.models);
   }
   return null;
 }
