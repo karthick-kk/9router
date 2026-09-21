@@ -10,5 +10,10 @@ export async function register() {
 
     const { startModelCatalogSync } = await import("@/lib/modelCatalog/sync.js");
     startModelCatalogSync();
+
+    // Combo model reachability ticker: evicts offline models from routing so a
+    // dead upstream can't burn the full combo timeout on every request.
+    const { startComboHealthScheduler } = await import("@/sse/services/comboHealthScheduler.js");
+    startComboHealthScheduler();
   }
 }
