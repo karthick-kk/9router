@@ -48,6 +48,7 @@ const DEFAULT_SETTINGS = {
   observabilityBatchSize: 20,
   observabilityFlushIntervalMs: 5000,
   observabilityMaxJsonSize: 5,
+  routingDecisionsMaxRecords: 5000,
   outboundProxyEnabled: false,
   outboundProxyUrl: "",
   outboundNoProxy: "",
