@@ -649,6 +649,22 @@ export default function ProfilePage() {
     }
   };
 
+  const saveDecisionsCap = async (v) => {
+    const n = Math.max(500, Number(v) || 5000);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ routingDecisionsMaxRecords: n }),
+      });
+      if (res.ok) {
+        setSettings(prev => ({ ...prev, routingDecisionsMaxRecords: n }));
+      }
+    } catch (err) {
+      console.error("Failed to update routingDecisionsMaxRecords:", err);
+    }
+  };
+
   const reloadSettings = async () => {
     try {
       const res = await fetch("/api/settings");
@@ -1617,6 +1633,24 @@ export default function ProfilePage() {
               checked={observabilityEnabled}
               onChange={updateObservabilityEnabled}
               disabled={loading}
+            />
+          </div>
+          <div className="mt-4 pt-4 border-t border-border/50 flex items-start sm:items-center justify-between gap-4">
+            <div className="flex-1 min-w-0">
+              <p className="font-medium text-sm sm:text-base">Routing decisions kept</p>
+              <p className="text-xs sm:text-sm text-text-muted">
+                Max routing-decision records to retain (min 500)
+              </p>
+            </div>
+            <Input
+              type="number"
+              min={500}
+              step={500}
+              key={"decisions-cap-" + (settings.routingDecisionsMaxRecords ?? "default")}
+              defaultValue={settings.routingDecisionsMaxRecords ?? 5000}
+              onBlur={(e) => saveDecisionsCap(e.target.value)}
+              disabled={loading}
+              className="w-24 sm:w-28 text-right shrink-0"
             />
           </div>
         </Card>
