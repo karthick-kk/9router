@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { detectRequiredCapabilities, reorderByCapabilities } from "../../open-sse/services/combo.js";
+import { describe, it, expect, vi } from "vitest";
+import { detectRequiredCapabilities, reorderByCapabilities, handleComboChat } from "../../open-sse/services/combo.js";
 
 describe("detectRequiredCapabilities", () => {
   it("text-only -> empty", () => {
@@ -74,5 +74,47 @@ describe("reorderByCapabilities", () => {
   it("single model -> unchanged", () => {
     const models = ["a/x"];
     expect(reorderByCapabilities(models, new Set(["vision"]))).toBe(models);
+  });
+});
+
+describe("decision capture", () => {
+  const mk = (over = {}) => ({
+    body: { messages: [{ role: "user", content: "x" }] },
+    models: ["p/A", "p/B"],
+    handleSingleModel: vi.fn(async () => ({ ok: true, status: 200, clone: () => ({ json: async () => ({}) }) })),
+    log: { info() {}, warn() {}, debug() {} },
+    comboName: "eric",
+    ...over,
+  });
+
+  it("fallback → static/combo-order decision, then served outcome", async () => {
+    const onDecision = vi.fn(), onServed = vi.fn();
+    await handleComboChat(mk({ comboStrategy: "fallback", onDecision, onServed }));
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ strategy: "fallback", source: "static", reason: "combo-order", picked: "p/A", combo: "eric" });
+    expect(onServed.mock.calls[0][0]).toMatchObject({ served: "p/A", success: true, fellOver: false });
+  });
+
+  it("failover → outcome.fellOver true with the served model", async () => {
+    const onServed = vi.fn();
+    const hsm = vi.fn(async (b, m) => m === "p/A"
+      ? { ok: false, status: 503, statusText: "unavailable", clone: () => ({ json: async () => ({ error: { message: "unavailable" } }) }) }
+      : { ok: true, status: 200, clone: () => ({ json: async () => ({}) }) });
+    await handleComboChat(mk({ comboStrategy: "fallback", handleSingleModel: hsm, onServed }));
+    expect(onServed.mock.calls[0][0]).toMatchObject({ served: "p/B", success: true, fellOver: true });
+  });
+
+  it("adaptive → thompson-sampled decision with stats snapshot", async () => {
+    const onDecision = vi.fn();
+    await handleComboChat(mk({ comboStrategy: "adaptive", onDecision }));
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ strategy: "adaptive", source: "adaptive", reason: "thompson-sampled" });
+    expect(onDecision.mock.calls[0][0].scores.stats).toEqual(expect.objectContaining({ successes: expect.any(Number) }));
+  });
+
+  it("onDecision throwing never breaks routing", async () => {
+    await expect(handleComboChat(mk({ comboStrategy: "fallback", onDecision: () => { throw new Error("boom"); } }))).resolves.toBeDefined();
+  });
+
+  it("onServed throwing never breaks routing", async () => {
+    await expect(handleComboChat(mk({ comboStrategy: "fallback", onServed: () => { throw new Error("boom"); } }))).resolves.toBeDefined();
   });
 });

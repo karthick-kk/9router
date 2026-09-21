@@ -125,7 +125,11 @@ function numberOr(value, fallback) {
  * @param {object} [options.config] - Per-combo strategy settings.
  * @returns {Promise<Response>}
  */
-export async function handleCompositeStageChat({ body, models, handleSingleModel, log, comboName, sessionId, config = {} }) {
+export async function handleCompositeStageChat({ body, models, handleSingleModel, log, comboName, sessionId, config = {}, onDecision, onServed }) {
+  const t0 = Date.now();
+  // Routing capture must never break routing: hooks are best-effort.
+  const safeEmit = (fn) => { if (typeof fn === "function") { try { fn(); } catch { /* fail-open */ } } };
+
   const cfg = {
     ...COMPOSITE_DEFAULTS,
     ...config,
@@ -135,6 +139,10 @@ export async function handleCompositeStageChat({ body, models, handleSingleModel
 
   const { capable, efficient, classifier } = resolveTierModels(models, cfg);
   if (!capable) {
+    safeEmit(() => onServed({
+      served: null, success: false, fellOver: false, fellOverTo: null,
+      status: 400, latencyMs: Date.now() - t0,
+    }));
     return new Response(
       JSON.stringify({ error: { message: "Composite combo has no models" } }),
       { status: 400, headers: { "Content-Type": "application/json" } }
@@ -177,6 +185,23 @@ export async function handleCompositeStageChat({ body, models, handleSingleModel
     state,
   });
 
+  // One decision record per request: what the strategy decided to do, regardless
+  // of what the model then served. `picked` is the target at decision time — the
+  // efficient→capable retry below is an outcome, not a new decision.
+  safeEmit(() => onDecision({
+    combo: comboName, strategy: "composite-stage", sessionId, turn: state.turnCounter,
+    source: decision.source, reason: decision.reason, picked: target,
+    confidence: decision.classifier?.confidence ?? null,
+    scores: {
+      ...(decision.stageScore !== undefined ? { stageScore: decision.stageScore } : {}),
+      ...(decision.signals ? { signals: decision.signals } : {}),
+      ...(decision.classifier ? { classifierTier: decision.classifier.tier } : {}),
+      escalations: state.escalations, downgrades: state.downgrades,
+    },
+    preview: turn.kind === "user" ? String(turn.text || "").slice(0, 200) : "",
+    classifierMs: null,
+  }));
+
   const res = await handleSingleModel(body, target);
 
   // Efficient model unavailable → retry once on capable rather than surfacing the
@@ -187,9 +212,18 @@ export async function handleCompositeStageChat({ body, models, handleSingleModel
     state.currentTier = TIER.CAPABLE;
     state.escalations++;
     touchRoutingState(comboName, sessionId);
-    return handleSingleModel(body, capable);
+    const retryRes = await handleSingleModel(body, capable);
+    safeEmit(() => onServed({
+      served: capable, success: retryRes?.ok, fellOver: false, fellOverTo: null,
+      status: retryRes?.status ?? null, latencyMs: Date.now() - t0,
+    }));
+    return retryRes;
   }
 
+  safeEmit(() => onServed({
+    served: target, success: res?.ok, fellOver: false, fellOverTo: null,
+    status: res?.status ?? null, latencyMs: Date.now() - t0,
+  }));
   return res;
 }
 

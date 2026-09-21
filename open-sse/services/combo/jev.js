@@ -83,14 +83,35 @@ function autoRubric(modelStr) {
 
 /**
  * Order combo models with Jev's pick first.
+ *
+ * Every decision and fail-open is reported through `onDecision(rec)` (exactly
+ * once per call) so the caller can persist a routingDecisions row; the strategy
+ * itself stays DB-free. A throwing `onDecision` never breaks routing.
+ *
  * @returns {Promise<string[]|null>} reordered models, or null to keep current order.
  */
-export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, log }) {
+export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, log, comboName = null, sessionId = null, turn = 1, onDecision }) {
+  const emit = (rec) => {
+    if (typeof onDecision !== "function") return;
+    try { onDecision({ combo: comboName, strategy: "jev", sessionId, turn, ...rec }); }
+    catch { /* capture must never break routing */ }
+  };
   const apiKey = cfg.apiKey || process.env.TYPESAFE_API_KEY || "";
-  if (!apiKey || !Array.isArray(models) || models.length < 2) return null;
+  if (!apiKey) {
+    emit({ source: "jev", reason: "no-api-key", picked: Array.isArray(models) ? models[0] : null, confidence: null, scores: {}, preview: "", classifierMs: null });
+    return null;
+  }
+  if (!Array.isArray(models) || models.length < 2) {
+    emit({ source: "jev", reason: "single-model", picked: models?.[0] || null, confidence: null, scores: {}, preview: "", classifierMs: null });
+    return null;
+  }
 
   const { userText, continuation } = extractTurn(body);
-  if (!userText.trim()) return null;
+  const preview = userText.slice(0, 200);
+  if (!userText.trim()) {
+    emit({ source: "jev", reason: "no-user-text", picked: models[0], confidence: null, scores: {}, preview, classifierMs: null });
+    return null;
+  }
 
   const url = cfg.url || JEV_DEFAULTS.url;
   const timeoutMs = Number.isFinite(cfg.timeoutMs) && cfg.timeoutMs > 0 ? cfg.timeoutMs : JEV_DEFAULTS.timeoutMs;
@@ -119,6 +140,7 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
     },
   };
 
+  const t0 = Date.now();
   let answer;
   try {
     const res = await fetch(url, {
@@ -129,31 +151,39 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
     });
     if (!res.ok) {
       log?.warn?.("JEV", `Classifier HTTP ${res.status}, keeping combo order`);
+      emit({ source: "jev", reason: `http-${res.status}`, picked: models[0], confidence: null, scores: {}, preview, classifierMs: Date.now() - t0 });
       return null;
     }
     answer = (await res.json())?.answers?.route;
   } catch (err) {
     log?.warn?.("JEV", `Classifier failed (${err?.name === "TimeoutError" ? "timeout" : err?.message || "error"}), keeping combo order`);
+    emit({ source: "jev", reason: err?.name === "TimeoutError" ? "timeout" : "error", picked: models[0], confidence: null, scores: {}, preview, classifierMs: Date.now() - t0 });
     return null;
   }
+  const elapsed = Date.now() - t0;
+  const probabilities = answer?.probabilities && typeof answer.probabilities === "object" ? answer.probabilities : {};
 
   if (answer?.type !== "choice" || !models.includes(answer.choice)) {
     log?.warn?.("JEV", "Classifier returned no usable choice, keeping combo order");
+    emit({ source: "jev", reason: "no-usable-choice", picked: models[0], confidence: null, scores: { probabilities }, preview, classifierMs: elapsed });
     return null;
   }
   const confidence = typeof answer.confidence === "number" ? answer.confidence : 1;
   if (confidence < gate) {
     // "rank": serve in Jev's full probability order — an uncertain pick degrades
     // through the alternatives Jev itself preferred instead of the static combo order.
-    if (cfg.lowConfidence === "rank" && answer.probabilities) {
-      const ranked = [...models].sort((a, b) => (answer.probabilities[b] || 0) - (answer.probabilities[a] || 0));
+    if (cfg.lowConfidence === "rank" && Object.keys(probabilities).length > 0) {
+      const ranked = [...models].sort((a, b) => (probabilities[b] || 0) - (probabilities[a] || 0));
       log?.info?.("JEV", `Low confidence ${confidence.toFixed(2)}, following Jev ranking: ${ranked.join(" > ")}`);
+      emit({ source: "jev", reason: "ranked", picked: ranked[0], confidence, scores: { probabilities }, preview, classifierMs: elapsed });
       return ranked;
     }
     log?.info?.("JEV", `Low confidence ${confidence.toFixed(2)} for ${answer.choice}, keeping combo order`);
+    emit({ source: "jev", reason: "below-gate-held", picked: models[0], confidence, scores: { probabilities }, preview, classifierMs: elapsed });
     return null;
   }
 
   log?.info?.("JEV", `Picked ${answer.choice} (conf ${confidence.toFixed(2)})`);
+  emit({ source: "jev", reason: "classified", picked: answer.choice, confidence, scores: { probabilities }, preview, classifierMs: elapsed });
   return [answer.choice, ...models.filter((m) => m !== answer.choice)];
 }

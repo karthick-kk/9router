@@ -214,3 +214,165 @@ describe("fusion combo", () => {
     expect(panelBody.messages[2].content).toBe("[Tool result: done]");
   });
 });
+
+describe("fusion decision capture", () => {
+  const mkBody = () => ({ messages: [{ role: "user", content: "What is the capital of France?" }] });
+  const fastTuning = { minPanel: 2, stragglerGraceMs: 50, panelHardTimeoutMs: 5000 };
+
+  it("emits one fusion-judge decision (judge-configured) + onServed on the judge answer", async () => {
+    const onDecision = vi.fn(), onServed = vi.fn();
+    const handleSingleModel = vi.fn(async (_body, model) => okResponse(model === "p/judge" ? "FINAL" : `ans-${model}`));
+    const res = await handleFusionChat({
+      body: mkBody(),
+      models: ["p/a", "p/b"],
+      handleSingleModel,
+      log,
+      comboName: "eric",
+      judgeModel: "p/judge",
+      onDecision,
+      onServed,
+      decisionSessionId: "sess-1",
+      decisionTurn: 3,
+    });
+
+    expect(onDecision).toHaveBeenCalledTimes(1);
+    expect(onDecision.mock.calls[0][0]).toMatchObject({
+      combo: "eric", strategy: "fusion", source: "fusion-judge",
+      reason: "judge-configured", picked: "p/judge",
+      sessionId: "sess-1", turn: 3, confidence: null, classifierMs: null,
+    });
+    expect(onDecision.mock.calls[0][0].scores).toEqual({ panel: ["p/a", "p/b"] });
+    expect(onDecision.mock.calls[0][0].preview).toBe("What is the capital of France?");
+
+    expect(onServed).toHaveBeenCalledTimes(1);
+    expect(onServed.mock.calls[0][0]).toMatchObject({
+      served: "p/judge", success: true, fellOver: false, fellOverTo: null,
+      status: 200, latencyMs: expect.any(Number),
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it("reports judge-auto (picked = panel[0]) when no judge model is configured", async () => {
+    const onDecision = vi.fn();
+    const handleSingleModel = vi.fn(async () => okResponse("ans"));
+    await handleFusionChat({
+      body: mkBody(),
+      models: ["p/first", "p/second"],
+      handleSingleModel,
+      log,
+      onDecision,
+    });
+    expect(onDecision).toHaveBeenCalledTimes(1);
+    expect(onDecision.mock.calls[0][0]).toMatchObject({
+      source: "fusion-judge", reason: "judge-auto", picked: "p/first",
+    });
+  });
+
+  it("single-panel passthrough: onServed served=panel[0], no onDecision", async () => {
+    const onDecision = vi.fn(), onServed = vi.fn();
+    const handleSingleModel = vi.fn(async () => okResponse("solo"));
+    await handleFusionChat({
+      body: mkBody(),
+      models: ["p/only"],
+      handleSingleModel,
+      log,
+      onDecision,
+      onServed,
+    });
+    expect(onDecision).not.toHaveBeenCalled();
+    expect(onServed).toHaveBeenCalledTimes(1);
+    expect(onServed.mock.calls[0][0]).toMatchObject({
+      served: "p/only", success: true, fellOver: false, fellOverTo: null, status: 200,
+    });
+  });
+
+  it("400 with no models: onServed served=null status=400, no onDecision", async () => {
+    const onDecision = vi.fn(), onServed = vi.fn();
+    const handleSingleModel = vi.fn();
+    const res = await handleFusionChat({
+      body: mkBody(),
+      models: [],
+      handleSingleModel,
+      log,
+      onDecision,
+      onServed,
+    });
+    expect(res.status).toBe(400);
+    expect(onDecision).not.toHaveBeenCalled();
+    expect(onServed).toHaveBeenCalledTimes(1);
+    expect(onServed.mock.calls[0][0]).toMatchObject({
+      served: null, success: false, status: 400, latencyMs: expect.any(Number),
+    });
+  });
+
+  it("503 when the whole panel fails: decision emitted, onServed served=null status=503", async () => {
+    const onDecision = vi.fn(), onServed = vi.fn();
+    const handleSingleModel = vi.fn(async () => errResponse(500));
+    const res = await handleFusionChat({
+      body: mkBody(),
+      models: ["p/a", "p/b"],
+      handleSingleModel,
+      log,
+      onDecision,
+      onServed,
+      tuning: fastTuning,
+    });
+    expect(res.status).toBe(503);
+    expect(onDecision).toHaveBeenCalledTimes(1);
+    expect(onServed).toHaveBeenCalledTimes(1);
+    expect(onServed.mock.calls[0][0]).toMatchObject({ served: null, success: false, status: 503 });
+  });
+
+  it("lone survivor: decision emitted, onServed served = surviving model", async () => {
+    const onDecision = vi.fn(), onServed = vi.fn();
+    const handleSingleModel = vi.fn(async (_b, m) => (m === "p/ok" ? okResponse("lone") : errResponse(500)));
+    await handleFusionChat({
+      body: mkBody(),
+      models: ["p/ok", "p/bad"],
+      handleSingleModel,
+      log,
+      onDecision,
+      onServed,
+      tuning: fastTuning,
+    });
+    expect(onDecision).toHaveBeenCalledTimes(1);
+    expect(onServed).toHaveBeenCalledTimes(1);
+    expect(onServed.mock.calls[0][0]).toMatchObject({ served: "p/ok", success: true, fellOver: false });
+  });
+
+  it("preview comes from the newest user message (text parts joined, sliced to 200)", async () => {
+    const onDecision = vi.fn();
+    const longText = "x".repeat(300);
+    const handleSingleModel = vi.fn(async () => okResponse("ans"));
+    await handleFusionChat({
+      body: {
+        messages: [
+          { role: "user", content: "first question" },
+          { role: "assistant", content: "first answer" },
+          { role: "user", content: [{ type: "text", text: longText }, { type: "image_url", image_url: { url: "u" } }] },
+        ]
+      },
+      models: ["p/a", "p/b"],
+      handleSingleModel,
+      log,
+      onDecision,
+    });
+    const preview = onDecision.mock.calls[0][0].preview;
+    expect(preview).toBe("x".repeat(200));
+    expect(preview.length).toBe(200);
+  });
+
+  it("throwing onDecision and onServed never break the response", async () => {
+    const handleSingleModel = vi.fn(async (_b, m) => okResponse(m === "p/judge" ? "F" : "a"));
+    const res = await handleFusionChat({
+      body: mkBody(),
+      models: ["p/a", "p/b"],
+      handleSingleModel,
+      log,
+      judgeModel: "p/judge",
+      onDecision: () => { throw new Error("d"); },
+      onServed: () => { throw new Error("s"); },
+    });
+    expect(res.ok).toBe(true);
+  });
+});
