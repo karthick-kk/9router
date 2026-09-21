@@ -52,7 +52,7 @@ async function getInternalHeaders() {
   return headers;
 }
 
-export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`) {
+export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:${process.env.PORT || UPDATER_CONFIG.appPort}`, opts = {}) {
   const headers = await getInternalHeaders();
   const start = Date.now();
 
@@ -137,11 +137,12 @@ export async function pingModelByKind(model, kind, baseUrl = `http://127.0.0.1:$
     headers,
     body: JSON.stringify({
       model,
-      // 1024 tokens: reasoning models (ClinePass/kimi-k3, deepseek-v4-pro, etc.) spend
-      // their budget on chain-of-thought before emitting an answer. A tiny probe like
-      // max_tokens:16 starves the answer and yields a false "no choices" failure.
-      // See issue #3010.
-      max_tokens: 1024,
+      // 1024 tokens by default: reasoning models (ClinePass/kimi-k3, deepseek-v4-pro,
+      // etc.) spend their budget on chain-of-thought before emitting an answer. A
+      // tiny probe like max_tokens:16 starves the answer and yields a false
+      // "no choices" failure. See issue #3010. Background health probes pass a
+      // smaller value (opts.maxTokens) — they only need any completion to count.
+      max_tokens: opts.maxTokens ?? 1024,
       stream: false,
       messages: [{ role: "user", content: "hi" }],
     }),

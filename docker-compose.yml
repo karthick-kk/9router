@@ -30,6 +30,10 @@ services:
       HOSTNAME: "0.0.0.0"
       NODE_ENV: production
       # HEADROOM_URL: http://headroom:8787   # unreachable in host mode (no compose DNS)
+      # Cap time-to-headers from upstreams: a hanging/dead backend then costs
+      # ~69s worst case (4 attempts x 15s + retry delays) instead of ~249s at
+      # the 60s default, so in-request combo failover is near-instant.
+      FETCH_CONNECT_TIMEOUT_MS: "15000"
     # depends_on:
     #   - headroom
 
