@@ -11,6 +11,10 @@ import path from "node:path";
 // touching real state.
 vi.mock("../../src/sse/services/comboHealth.js", () => ({
   isModelOffline: (m) => m === "p/Offline",
+  getHealthDetail: (m) =>
+    m === "p/Offline"
+      ? { status: "offline", lastError: "probe failed (503)", updatedAt: 1 }
+      : { status: "unknown", lastError: null, updatedAt: null },
 }));
 vi.mock("../../open-sse/services/combo/adaptive-state.js", () => ({
   getAdaptiveStats: (m) =>
@@ -162,8 +166,10 @@ describe("GET /api/routing/models", () => {
     const json = await (await call("")).json();
     const byModel = Object.fromEntries(json.models.map((m) => [m.model, m]));
     expect(byModel["p/Offline"].inHealth.offline).toBe(true);
+    expect(byModel["p/Offline"].inHealth.lastError).toBe("probe failed (503)");
     expect(byModel["p/Healthy"].inHealth.offline).toBe(false);
     expect(byModel["p/Unknown"].inHealth.offline).toBe(false);
+    expect(byModel["p/Unknown"].inHealth.lastError).toBeNull();
   });
 
   it("attaches adaptive stats when present, null when the model has no history", async () => {
@@ -171,6 +177,6 @@ describe("GET /api/routing/models", () => {
     const byModel = Object.fromEntries(json.models.map((m) => [m.model, m]));
     expect(byModel["p/Healthy"].inHealth.stats).toEqual({ successes: 5, failures: 1, avgLatencyMs: 100, penalty: 0 });
     expect(byModel["p/Offline"].inHealth.stats).toBeNull(); // zero adaptive stats
-    expect(byModel["p/Unknown"].inHealth).toEqual({ offline: false, stats: null }); // fail-open
+    expect(byModel["p/Unknown"].inHealth).toEqual({ offline: false, lastError: null, stats: null }); // fail-open
   });
 });
