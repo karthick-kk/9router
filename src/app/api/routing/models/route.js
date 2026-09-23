@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { queryModels } from "@/lib/db/repos/routingDecisionsRepo.js";
-import { isModelOffline } from "@/sse/services/comboHealth.js";
+import { getHealthDetail } from "@/sse/services/comboHealth.js";
 import { getAdaptiveStats } from "open-sse/services/combo/adaptive-state.js";
 
 export const dynamic = "force-dynamic";
@@ -9,10 +9,10 @@ export const dynamic = "force-dynamic";
 // restart, so every lookup is fail-open: a model absent from both maps simply
 // reports offline=false / stats=null.
 function inHealth(key) {
-  const offline = isModelOffline(key);
+  const { status, lastError } = getHealthDetail(key);
   const stats = getAdaptiveStats(key);
   const hasStats = stats && (stats.successes > 0 || stats.failures > 0);
-  return { offline, stats: hasStats ? stats : null };
+  return { offline: status === "offline", lastError: status === "offline" ? lastError : null, stats: hasStats ? stats : null };
 }
 
 export async function GET(request) {
