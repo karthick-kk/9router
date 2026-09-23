@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import { orderModelsByJev, extractTurn } from "../../open-sse/services/combo/jev.js";
+import { recordAttempt, resetAdaptiveState } from "../../open-sse/services/combo/adaptive-state.js";
 
 const MODELS = ["oc/fast-model", "oc/smart-model"];
 const CFG = { apiKey: "test-key", confidenceGate: 0.5 };
@@ -227,5 +228,75 @@ describe("decision capture", () => {
   it("never throws out of the decision path even if onDecision throws", async () => {
     global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ answers: { route: { type: "choice", choice: "9eric/B", confidence: 0.9 } } }) }));
     await expect(orderModelsByJev(opts({ onDecision: () => { throw new Error("boom"); }, comboName: "c" }))).resolves.toEqual(["9eric/B", "9eric/A"]);
+  });
+});
+
+describe("health veto (live model health overrides Jev's pick)", () => {
+  const H = "9eric/healthy";
+  const S = "9eric/sick";
+  const body = { messages: [{ role: "user", content: "fix the login bug" }] };
+  const CFG = { apiKey: "k", confidenceGate: 0.5 };
+  const stubAnswer = (choice, extra = {}) => vi.fn(async () => ({
+    ok: true,
+    json: async () => ({ answers: { route: { type: "choice", choice, confidence: 0.9, probabilities: { [choice]: 0.9 }, ...extra } } }),
+  }));
+
+  beforeEach(() => {
+    resetAdaptiveState();
+    // ~30 recent failures → expected reliability ≈ 0.03, far below the 0.4 veto.
+    for (let i = 0; i < 30; i++) recordAttempt(S, false);
+  });
+
+  it("vetoed pick → combo order with the sick model demoted to the end", async () => {
+    global.fetch = stubAnswer(S);
+    const onDecision = vi.fn();
+    const ordered = await orderModelsByJev({ body, models: [H, S], cfg: CFG, log: { warn() {}, info() {} }, onDecision });
+    expect(ordered).toEqual([H, S]);
+    expect(onDecision).toHaveBeenCalledTimes(1);
+    expect(onDecision.mock.calls[0][0]).toMatchObject({
+      source: "jev", reason: "health-veto", picked: H,
+    });
+    expect(onDecision.mock.calls[0][0].scores.veto).toMatchObject({ picked: S, sick: [S] });
+  });
+
+  it("healthy pick is NOT vetoed (classifier decision stands)", async () => {
+    global.fetch = stubAnswer(H);
+    const onDecision = vi.fn();
+    const ordered = await orderModelsByJev({ body, models: [H, S], cfg: CFG, log: { warn() {}, info() {} }, onDecision });
+    // H (the pick) is healthy → normal reorder, S demoted by the veto path
+    // applied to ALL sick models: [H, S] — but the reason is "classified".
+    expect(ordered).toEqual([H, S]);
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "jev", reason: "classified", picked: H });
+  });
+
+  it("a model that succeeds but is SLOW also gets vetoed", async () => {
+    const L = "9eric/slow";
+    for (let i = 0; i < 10; i++) recordAttempt(L, true, { latencyMs: 15000 });
+    for (let i = 0; i < 3; i++) recordAttempt(L, false);
+    // reliability ≈ 11/15 ≈ 0.73 × speed 0.5 (worst latency) ≈ 0.37 < 0.4
+    global.fetch = stubAnswer(L);
+    const ordered = await orderModelsByJev({ body, models: [H, L], cfg: CFG, log: { warn() {}, info() {} } });
+    expect(ordered).toEqual([H, L]);
+  });
+
+  it("ranked mode: the sick model sinks to the end regardless of probability", async () => {
+    // Jev's own probability favors the sick model — the veto still wins.
+    global.fetch = stubAnswer(S, { confidence: 0.3, probabilities: { [S]: 0.8, [H]: 0.2 } });
+    const ordered = await orderModelsByJev({ body, models: [H, S], cfg: { ...CFG, lowConfidence: "rank" }, log: { warn() {}, info() {} } });
+    expect(ordered).toEqual([H, S]);
+  });
+
+  it("all models sick → combo order returned unchanged (failover loop is the backstop)", async () => {
+    const A2 = "9eric/sick2";
+    for (let i = 0; i < 30; i++) recordAttempt(A2, false);
+    global.fetch = stubAnswer(A2);
+    const ordered = await orderModelsByJev({ body, models: [S, A2], cfg: CFG, log: { warn() {}, info() {} } });
+    expect(ordered).toEqual([S, A2]);
+  });
+
+  it("unknown models (no history) are never vetoed — uniform prior stays above threshold", async () => {
+    global.fetch = stubAnswer(H);
+    const ordered = await orderModelsByJev({ body, models: [H, "9eric/unseen"], cfg: CFG, log: { warn() {}, info() {} } });
+    expect(ordered).toEqual([H, "9eric/unseen"]);
   });
 });
