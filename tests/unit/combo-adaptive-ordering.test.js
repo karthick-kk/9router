@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 
-import { orderAdaptiveModels, recordAttempt, resetAdaptiveState } from "../../open-sse/services/combo/adaptive.js";
+import { orderAdaptiveModels, recordAttempt, resetAdaptiveState, getAdaptiveStats } from "../../open-sse/services/combo/adaptive.js";
 import { handleComboChat } from "../../open-sse/services/combo.js";
 
 const log = { info: () => {}, warn: () => {}, debug: () => {} };
@@ -204,6 +204,29 @@ describe("handleComboChat with adaptive strategy (end-to-end, live cache)", () =
       comboStrategy: "adaptive",
     });
     expect(attempts[0]).toBe(B);
+  });
+
+  it("observes attempts for NON-adaptive strategies too (shared health cache is strategy-blind)", async () => {
+    // A plain "fallback" combo (e.g. a Jev combo, where the classifier runs in
+    // the chat handler and handleComboChat only sees the reordered list) still
+    // touches the shared model-health cache: a failed attempt is a failure
+    // signal for EVERY strategy that reads it later.
+    const A400 = "ericaiproxy/bad400";
+    const ok = "ericaiproxy/ok";
+    const handler = vi.fn(async (body, model) => (model === A400 ? errResponse(400, "bad request") : okResponse()));
+    await handleComboChat({
+      body: { messages: [{ role: "user", content: "hi" }] },
+      models: [A400, ok],
+      handleSingleModel: handler,
+      log,
+      comboName: "test",
+      comboStrategy: "fallback",
+    });
+    // The failed A400 attempt (400 → no-fallback path, returned to the client)
+    // must have been observed by the shared cache.
+    const badStats = getAdaptiveStats(A400);
+    expect(badStats.failures).toBe(1);
+    expect(badStats.successes).toBe(0);
   });
 
   it("does NOT reorder or observe when the strategy is not adaptive (default preserved)", async () => {

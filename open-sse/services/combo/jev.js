@@ -12,6 +12,8 @@
  */
 
 import { getCapabilitiesForModel } from "../../providers/capabilities.js";
+import { getAdaptiveStats } from "./adaptive-state.js";
+import { expectedReliability, latencyScore, rateLimitFactor } from "./adaptive-scoring.js";
 
 export const JEV_DEFAULTS = {
   url: "https://api.typesafe.ai/v1/systemone",
@@ -79,6 +81,37 @@ function autoRubric(modelStr) {
   if (caps.tools) bits.push("tool calling");
   if (caps.reasoning) bits.push("reasoning");
   return bits.length ? `${model} (${bits.join(", ")})` : model;
+}
+
+// ── Live health veto ─────────────────────────────────────────────────────────
+//
+// The classifier ranks by task fit, not liveness — it cannot tell a
+// paper-fast model that is timing out right now. The shared model-health cache
+// (fed by the combo failover loop for EVERY strategy) can. This is a
+// deterministic "is it clearly sick" filter applied after Jev's pick: a model
+// whose live factor — reliability × speed × the 429 guardrail, the same axes
+// adaptive routing blends — falls below the veto is moved to the end of the
+// serve order, and a vetoed pick is replaced by the first non-vetoed model in
+// combo order. Two healthy models are never reordered against each other, and
+// when every model is sick the pre-veto order is kept — the failover loop is
+// the unchanged backstop.
+
+const HEALTH_VETO_THRESHOLD = 0.4;
+
+function healthFactorFor(model, now) {
+  const s = getAdaptiveStats(model, now);
+  // Speed axis may only demote (≤1): a fast model earns no bonus, a slow one
+  // is dinged. Unknown latency hits the optimistic prior and clamps to neutral.
+  const speed = Math.max(0, Math.min(1, 1 + latencyScore(s.avgLatencyMs) - 0.5));
+  return expectedReliability(s.successes, s.failures) * speed * rateLimitFactor(s.penalty);
+}
+
+/** Sick models (factor < veto) moved to the tail; healthy ones keep their relative order. */
+function demoteSick(models, now) {
+  const sick = models.filter((m) => healthFactorFor(m, now) < HEALTH_VETO_THRESHOLD);
+  if (sick.length === 0 || sick.length === models.length) return { order: models, sick };
+  const sickSet = new Set(sick);
+  return { order: [...models.filter((m) => !sickSet.has(m)), ...sick], sick };
 }
 
 /**
@@ -173,7 +206,13 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
     // "rank": serve in Jev's full probability order — an uncertain pick degrades
     // through the alternatives Jev itself preferred instead of the static combo order.
     if (cfg.lowConfidence === "rank" && Object.keys(probabilities).length > 0) {
-      const ranked = [...models].sort((a, b) => (probabilities[b] || 0) - (probabilities[a] || 0));
+      const now = Date.now();
+      // Vetoed models sink to the end (sentinel -1); the rest keep Jev's
+      // probability order, ties broken by combo order (stable sort).
+      const ranked = [...models]
+        .map((m) => ({ m, p: healthFactorFor(m, now) < HEALTH_VETO_THRESHOLD ? -1 : probabilities[m] || 0 }))
+        .sort((a, b) => b.p - a.p)
+        .map((e) => e.m);
       log?.info?.("JEV", `Low confidence ${confidence.toFixed(2)}, following Jev ranking: ${ranked.join(" > ")}`);
       emit({ source: "jev", reason: "ranked", picked: ranked[0], confidence, scores: { probabilities }, preview, classifierMs: elapsed });
       return ranked;
@@ -183,6 +222,18 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
     return null;
   }
 
+  // Health veto: Jev picks by task fit and cannot see that its pick is timing
+  // out or failing right now. When the pick's live health factor is clearly
+  // sick, serve the configured order with ALL sick models demoted to the end —
+  // healthy models keep their relative order, and if every model is sick the
+  // pre-veto order is returned unchanged (failover loop is the backstop).
+  const pickFactor = healthFactorFor(answer.choice, Date.now());
+  if (pickFactor < HEALTH_VETO_THRESHOLD) {
+    const { order, sick } = demoteSick(models, Date.now());
+    log?.info?.("JEV", `Vetoed ${answer.choice} (health ${pickFactor.toFixed(2)} < ${HEALTH_VETO_THRESHOLD}, sick: ${sick.join(", ")}), keeping combo order`);
+    emit({ source: "jev", reason: "health-veto", picked: order[0], confidence, scores: { probabilities, veto: { picked: answer.choice, factor: pickFactor, sick } }, preview, classifierMs: elapsed });
+    return order;
+  }
   log?.info?.("JEV", `Picked ${answer.choice} (conf ${confidence.toFixed(2)})`);
   emit({ source: "jev", reason: "classified", picked: answer.choice, confidence, scores: { probabilities }, preview, classifierMs: elapsed });
   return [answer.choice, ...models.filter((m) => m !== answer.choice)];
