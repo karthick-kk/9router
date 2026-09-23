@@ -73,11 +73,25 @@ export default function CombosPage() {
   const [presetLoading, setPresetLoading] = useState(null); // "cursor" | "claude" | null
   const [selectedIds, setSelectedIds] = useState([]);
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Live probe-registry status per model ("provider/model"), refreshed while the
+  // page is open. Empty object = not yet loaded; unknown entries render neutral.
+  const [modelHealth, setModelHealth] = useState({});
   const { copied, copy } = useCopyToClipboard();
 
   useEffect(() => {
     fetchData();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep probe-registry status fresh while the page is open: fetch once the
+  // combo list loads, then every 30s (the ticker probes at its own cadence;
+  // this just mirrors the in-memory registry).
+  useEffect(() => {
+    const models = combos.flatMap((c) => c.models);
+    if (models.length === 0) return undefined;
+    fetchHealth(models);
+    const t = setInterval(() => fetchHealth(models), 30000);
+    return () => clearInterval(t);
+  }, [combos]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Drop stale selection when the combo list changes (delete / refresh).
   useEffect(() => {
@@ -189,6 +203,21 @@ export default function CombosPage() {
       console.log("Error fetching data:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // Snapshot the probe-registry status for every model across all combos.
+  const fetchHealth = async (list) => {
+    const models = [...new Set(list)];
+    if (models.length === 0) return;
+    try {
+      const res = await fetch(`/api/combos/health?models=${encodeURIComponent(models.join(","))}`);
+      if (res.ok) {
+        const data = await res.json();
+        setModelHealth(prev => ({ ...prev, ...(data.health || {}) }));
+      }
+    } catch (error) {
+      console.log("Error fetching combo health:", error);
     }
   };
 
@@ -530,6 +559,7 @@ const handleBulkSetStrategy = async (strategy) => {
                   onDelete={() => handleDelete(combo.id)}
                   strategy={comboStrategies[combo.name] || {}}
                   onSetStrategy={(patch) => handleSetComboStrategy(combo.name, patch)}
+                  modelHealth={modelHealth}
                   selected={selectedIds.includes(combo.id)}
                   onToggleSelect={() => toggleSelect(combo.id)}
                   jevConfigured={jevConfigured}
@@ -557,6 +587,7 @@ const handleBulkSetStrategy = async (strategy) => {
           onClose={() => setShowCreateModal(false)}
           onSave={handleCreate}
           activeProviders={activeProviders}
+          modelHealth={modelHealth}
         />
       )}
 
@@ -568,6 +599,7 @@ const handleBulkSetStrategy = async (strategy) => {
           onClose={() => setEditingCombo(null)}
           onSave={(data) => handleUpdate(editingCombo.id, data)}
           activeProviders={activeProviders}
+          modelHealth={modelHealth}
         />
       )}
 
@@ -671,7 +703,7 @@ function JevKeyInput({ onSaved }) {
   );
 }
 
-function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, jevConfigured = true, onJevKeySaved, selected = false, onToggleSelect }) {
+function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], copied, onCopy, onEdit, onDelete, strategy = {}, onSetStrategy, jevConfigured = true, onJevKeySaved, selected = false, onToggleSelect, modelHealth = {} }) {
   const [showJudgeSelect, setShowJudgeSelect] = useState(false);
   const current = strategy.fallbackStrategy || "fallback";
   const judge = strategy.judgeModel || "";
@@ -720,8 +752,9 @@ const comboCaps = aggregateComboCapabilities(combo.models, comboByName);
               {combo.models.length === 0 ? (
                 <span className="text-xs text-text-muted italic">No models</span>
               ) : (
-                combo.models.slice(0, 3).map((model, index) => (
+                combo.models.map((model, index) => (
                   <code key={index} className="inline-flex items-center gap-1 rounded bg-black/5 px-1.5 py-0.5 font-mono text-xs text-text-muted dark:bg-white/5">
+                    <HealthDot model={model} health={modelHealth} />
                     <span>{model}</span>
                     <CapacityBadges caps={
                       comboByName[model]
@@ -730,9 +763,6 @@ const comboCaps = aggregateComboCapabilities(combo.models, comboByName);
                     } />
                   </code>
                 ))
-              )}
-              {combo.models.length > 3 && (
-                <span className="text-[10px] text-text-muted">+{combo.models.length - 3} more</span>
               )}
             </div>
 {comboCaps && (
@@ -1178,7 +1208,29 @@ function CapacityAdapterCap({ cap, entry, onChange, activeProviders, getCaps }) 
   );
 }
 
-function ModelItem({ id, index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown, onRemove }) {
+// Probe-registry status dot. Three states on purpose: grey means "no probe
+// data" (monitoring off, model never probed, or registry reset by a restart),
+// which is NOT the same as healthy — a green here would be a lie.
+function HealthDot({ model, health }) {
+  const h = model ? health?.[model] : null;
+  const status = h?.status || "unknown";
+  const title =
+    status === "offline"
+      ? `Offline — ${h.lastError || "probes failing"}`
+      : status === "online"
+        ? "Online (last probe ok)"
+        : "Not monitored — no probe data";
+  return (
+    <span
+      title={title}
+      className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${
+        status === "offline" ? "bg-danger" : status === "online" ? "bg-success" : "bg-text-muted/30"
+      }`}
+    />
+  );
+}
+
+function ModelItem({ id, index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown, onRemove, health = {} }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useSortable({ id });
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -1223,6 +1275,9 @@ function ModelItem({ id, index, model, isFirst, isLast, onEdit, onMoveUp, onMove
 
       {/* Index badge */}
       <span className="text-[10px] font-medium text-text-muted w-3 text-center shrink-0">{index + 1}</span>
+
+      {/* Probe-registry health (online / offline / not monitored) */}
+      <HealthDot model={model} health={health} />
 
       {/* Inline editable model value */}
       {editing ? (
@@ -1276,7 +1331,7 @@ function ModelItem({ id, index, model, isFirst, isLast, onEdit, onMoveUp, onMove
   );
 }
 
-function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindFilter = null }) {
+function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindFilter = null, modelHealth = {} }) {
   // Initialize state with combo values - key prop on parent handles reset on remount
   const [name, setName] = useState(combo?.name || "");
   const [models, setModels] = useState(combo?.models || []);
@@ -1427,6 +1482,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders, kindF
                       onMoveUp={() => handleMoveUp(index)}
                       onMoveDown={() => handleMoveDown(index)}
                       onRemove={() => handleRemoveModel(index)}
+                      health={modelHealth}
                     />
                   ))}
                 </div>

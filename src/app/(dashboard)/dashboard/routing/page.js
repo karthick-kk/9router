@@ -441,12 +441,18 @@ function ModelsTab({ period }) {
                 <td className="py-2 pr-3 font-mono max-w-[240px] truncate" title={m.model}>
                   {m.model}
                 </td>
-                <td className="py-2 pr-3 whitespace-nowrap">
+                <td
+                  className="py-2 pr-3 whitespace-nowrap"
+                  title={offline && m.inHealth?.lastError ? `Offline — ${m.inHealth.lastError}` : undefined}
+                >
                   <span className="inline-flex items-center gap-1.5">
                     <span className={`block w-1.5 h-1.5 rounded-full ${offline ? "bg-danger" : "bg-success"}`} />
                     <span className={offline ? "text-danger" : "text-text-muted"}>
                       {offline ? "offline" : "online"}
                     </span>
+                    {offline && m.inHealth?.lastError && (
+                      <span className="text-danger/70 truncate max-w-[180px]">{m.inHealth.lastError}</span>
+                    )}
                   </span>
                 </td>
                 <td className="py-2 pr-3 whitespace-nowrap text-text-muted tabular-nums">

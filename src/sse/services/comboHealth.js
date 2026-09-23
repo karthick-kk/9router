@@ -62,6 +62,19 @@ export function isModelOffline(model) {
 }
 
 /**
+ * Full per-model probe detail for dashboards. A model never probed (fresh
+ * restart, monitoring off, or not yet in a monitored combo) reports
+ * `unknown` — dashboards must not render it as online.
+ * @param {string} model
+ * @returns {{status: "unknown"|"online"|"offline", lastError: string|null, updatedAt: number|null}}
+ */
+export function getHealthDetail(model) {
+  const h = modelHealth.get(model);
+  if (!h) return { status: "unknown", lastError: null, updatedAt: null };
+  return { status: h.offline ? "offline" : "online", lastError: h.lastError, updatedAt: h.updatedAt };
+}
+
+/**
  * True when the model has probe history and no open issue: online with zero
  * consecutive failures. Suspect (recent fail) or offline models are NOT
  * stable — the scheduler probes those every tick so eviction/recovery stays
