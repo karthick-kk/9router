@@ -549,11 +549,15 @@ export async function handleComboChat({
     const modelStr = rotatedModels[i];
     log.info("COMBO", `Trying model ${i + 1}/${rotatedModels.length}: ${modelStr}`);
 
-    // Adaptive: observe every attempt so the health cache learns what just
-    // happened. The clock starts here, so latency is time-to-usable-response —
-    // ≈time-to-first-byte for streaming (fetch resolves on headers), total time
-    // otherwise. Measured for failures too, because a slow failure is still a
-    // routing signal (the model was degrading before it stopped working).
+    // Observe EVERY attempt (all strategies, not just adaptive) so the shared
+    // model-health cache learns what just happened. It is keyed on the model,
+    // not the combo, so traffic from any combo (Jev, fusion, fallback, ...)
+    // that touches a model contributes to the signal that adaptive reordering
+    // and the Jev health-veto both read. The clock starts here, so latency is
+    // time-to-usable-response — ≈time-to-first-byte for streaming (fetch
+    // resolves on headers), total time otherwise. Measured for failures too,
+    // because a slow failure is still a routing signal (the model was
+    // degrading before it stopped working).
     const attemptStart = Date.now();
 
     try {
@@ -705,7 +709,7 @@ export async function handleComboChat({
       // Fallback to next model
       lastError = errorText || String(result.status);
       if (!lastStatus) lastStatus = result.status;
-      if (adaptiveEnabled) recordAttempt(modelStr, false, { rateLimited: isRateLimit(result.status, errorText) });
+      recordAttempt(modelStr, false, { rateLimited: isRateLimit(result.status, errorText) });
       log.warn("COMBO", `Model ${modelStr} failed, trying next`, { status: result.status });
     } catch (error) {
       // Catch unexpected exceptions to ensure fallback continues
@@ -714,7 +718,7 @@ export async function handleComboChat({
       }
       lastError = error.message || String(error);
       if (!lastStatus) lastStatus = 500;
-      if (adaptiveEnabled) recordAttempt(modelStr, false);
+      recordAttempt(modelStr, false);
       log.warn("COMBO", `Model ${modelStr} threw error, trying next`, { error: lastError });
     }
   }
