@@ -21,6 +21,10 @@ const DEFAULT_SETTINGS = {
   jevUrl: "https://api.typesafe.ai/v1/systemone",
   jevTimeoutMs: 3000,
   jevConfidenceGate: 0.5,
+  // Self-hosted Laya sidecar (local classifier) — same /v1/systemone protocol as
+  // Jev, no key needed (laya-serve ignores Authorization unless LAYA_API_KEY is
+  // set on the sidecar). Reached over the host network, so 127.0.0.1.
+  layaUrl: "http://127.0.0.1:8010/v1/systemone",
   capacityAdapter: {
     vision: { enabled: true, roundRobin: false, models: [] },
     pdf: { enabled: false, roundRobin: false, models: [] },
