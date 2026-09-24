@@ -124,25 +124,30 @@ function demoteSick(models, now) {
  * @returns {Promise<string[]|null>} reordered models, or null to keep current order.
  */
 export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, log, comboName = null, sessionId = null, turn = 1, onDecision }) {
+  // The wire protocol is shared by both TypeSafe Jev and the self-hosted Laya
+  // sidecar, so the recorded strategy/source name is caller-supplied ("jev" by
+  // default) rather than hardcoded — the Routing Intelligence dashboard then
+  // attributes decisions to the right engine.
+  const source = cfg.source || "jev";
   const emit = (rec) => {
     if (typeof onDecision !== "function") return;
-    try { onDecision({ combo: comboName, strategy: "jev", sessionId, turn, ...rec }); }
+    try { onDecision({ combo: comboName, strategy: source, sessionId, turn, ...rec }); }
     catch { /* capture must never break routing */ }
   };
   const apiKey = cfg.apiKey || process.env.TYPESAFE_API_KEY || "";
   if (!apiKey) {
-    emit({ source: "jev", reason: "no-api-key", picked: Array.isArray(models) ? models[0] : null, confidence: null, scores: {}, preview: "", classifierMs: null });
+    emit({ source, reason: "no-api-key", picked: Array.isArray(models) ? models[0] : null, confidence: null, scores: {}, preview: "", classifierMs: null });
     return null;
   }
   if (!Array.isArray(models) || models.length < 2) {
-    emit({ source: "jev", reason: "single-model", picked: models?.[0] || null, confidence: null, scores: {}, preview: "", classifierMs: null });
+    emit({ source, reason: "single-model", picked: models?.[0] || null, confidence: null, scores: {}, preview: "", classifierMs: null });
     return null;
   }
 
   const { userText, continuation } = extractTurn(body);
   const preview = userText.slice(0, 200);
   if (!userText.trim()) {
-    emit({ source: "jev", reason: "no-user-text", picked: models[0], confidence: null, scores: {}, preview, classifierMs: null });
+    emit({ source, reason: "no-user-text", picked: models[0], confidence: null, scores: {}, preview, classifierMs: null });
     return null;
   }
 
@@ -184,13 +189,13 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
     });
     if (!res.ok) {
       log?.warn?.("JEV", `Classifier HTTP ${res.status}, keeping combo order`);
-      emit({ source: "jev", reason: `http-${res.status}`, picked: models[0], confidence: null, scores: {}, preview, classifierMs: Date.now() - t0 });
+      emit({ source, reason: `http-${res.status}`, picked: models[0], confidence: null, scores: {}, preview, classifierMs: Date.now() - t0 });
       return null;
     }
     answer = (await res.json())?.answers?.route;
   } catch (err) {
     log?.warn?.("JEV", `Classifier failed (${err?.name === "TimeoutError" ? "timeout" : err?.message || "error"}), keeping combo order`);
-    emit({ source: "jev", reason: err?.name === "TimeoutError" ? "timeout" : "error", picked: models[0], confidence: null, scores: {}, preview, classifierMs: Date.now() - t0 });
+    emit({ source, reason: err?.name === "TimeoutError" ? "timeout" : "error", picked: models[0], confidence: null, scores: {}, preview, classifierMs: Date.now() - t0 });
     return null;
   }
   const elapsed = Date.now() - t0;
@@ -198,10 +203,16 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
 
   if (answer?.type !== "choice" || !models.includes(answer.choice)) {
     log?.warn?.("JEV", "Classifier returned no usable choice, keeping combo order");
-    emit({ source: "jev", reason: "no-usable-choice", picked: models[0], confidence: null, scores: { probabilities }, preview, classifierMs: elapsed });
+    emit({ source, reason: "no-usable-choice", picked: models[0], confidence: null, scores: { probabilities }, preview, classifierMs: elapsed });
     return null;
   }
-  const confidence = typeof answer.confidence === "number" ? answer.confidence : 1;
+  // Laya reports the winner's calibrated probability as `answer_confidence`
+  // (0.29–0.55 in the bench) alongside `confidence`, which is normalized
+  // entropy (~0.15) — meaningless against the gate. Prefer the calibrated
+  // value when present; TypeSafe returns only `confidence`, so its behavior
+  // is unchanged.
+  const confidence = typeof answer.answer_confidence === "number" ? answer.answer_confidence
+    : typeof answer.confidence === "number" ? answer.confidence : 1;
   if (confidence < gate) {
     // "rank": serve in Jev's full probability order — an uncertain pick degrades
     // through the alternatives Jev itself preferred instead of the static combo order.
@@ -214,11 +225,11 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
         .sort((a, b) => b.p - a.p)
         .map((e) => e.m);
       log?.info?.("JEV", `Low confidence ${confidence.toFixed(2)}, following Jev ranking: ${ranked.join(" > ")}`);
-      emit({ source: "jev", reason: "ranked", picked: ranked[0], confidence, scores: { probabilities }, preview, classifierMs: elapsed });
+      emit({ source, reason: "ranked", picked: ranked[0], confidence, scores: { probabilities }, preview, classifierMs: elapsed });
       return ranked;
     }
     log?.info?.("JEV", `Low confidence ${confidence.toFixed(2)} for ${answer.choice}, keeping combo order`);
-    emit({ source: "jev", reason: "below-gate-held", picked: models[0], confidence, scores: { probabilities }, preview, classifierMs: elapsed });
+    emit({ source, reason: "below-gate-held", picked: models[0], confidence, scores: { probabilities }, preview, classifierMs: elapsed });
     return null;
   }
 
@@ -231,10 +242,10 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
   if (pickFactor < HEALTH_VETO_THRESHOLD) {
     const { order, sick } = demoteSick(models, Date.now());
     log?.info?.("JEV", `Vetoed ${answer.choice} (health ${pickFactor.toFixed(2)} < ${HEALTH_VETO_THRESHOLD}, sick: ${sick.join(", ")}), keeping combo order`);
-    emit({ source: "jev", reason: "health-veto", picked: order[0], confidence, scores: { probabilities, veto: { picked: answer.choice, factor: pickFactor, sick } }, preview, classifierMs: elapsed });
+    emit({ source, reason: "health-veto", picked: order[0], confidence, scores: { probabilities, veto: { picked: answer.choice, factor: pickFactor, sick } }, preview, classifierMs: elapsed });
     return order;
   }
   log?.info?.("JEV", `Picked ${answer.choice} (conf ${confidence.toFixed(2)})`);
-  emit({ source: "jev", reason: "classified", picked: answer.choice, confidence, scores: { probabilities }, preview, classifierMs: elapsed });
+  emit({ source, reason: "classified", picked: answer.choice, confidence, scores: { probabilities }, preview, classifierMs: elapsed });
   return [answer.choice, ...models.filter((m) => m !== answer.choice)];
 }

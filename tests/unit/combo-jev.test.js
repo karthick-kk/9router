@@ -300,3 +300,63 @@ describe("health veto (live model health overrides Jev's pick)", () => {
     expect(ordered).toEqual([H, "9eric/unseen"]);
   });
 });
+
+describe("laya compatibility (shared /v1/systemone engine)", () => {
+  const A = "9eric/A";
+  const B = "9eric/B";
+  const body = { messages: [{ role: "user", content: "fix the login bug" }] };
+  const layaAnswer = (choice, extra = {}) => ({
+    type: "choice", choice, confidence: 0.15, ...extra, // 0.15 = laya's entropy-style `confidence`
+  });
+  const fetchAnswer = (ans) => {
+    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ answers: { route: ans } }) }));
+  };
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("prefers answer_confidence over the entropy `confidence` when gating", async () => {
+    // answer_confidence 0.6 passes the 0.5 gate even though confidence (entropy) is 0.15.
+    fetchAnswer(layaAnswer(B, { answer_confidence: 0.6, probabilities: { [B]: 0.6, [A]: 0.4 } }));
+    const onDecision = vi.fn();
+    const ordered = await orderModelsByJev({ body, models: [A, B], cfg: { apiKey: "laya-local", confidenceGate: 0.5, source: "laya" }, log: { warn() {}, info() {} }, onDecision });
+    expect(ordered).toEqual([B, A]);
+    const rec = onDecision.mock.calls[0][0];
+    expect(rec).toMatchObject({ source: "laya", strategy: "laya", reason: "classified", confidence: 0.6 });
+  });
+
+  it("answer_confidence below the gate falls to the low-confidence path (rank)", async () => {
+    // answer_confidence 0.4 < 0.5 gate; confidence (entropy) 0.15 also below — both agree.
+    fetchAnswer(layaAnswer(B, { answer_confidence: 0.4, probabilities: { [A]: 0.55, [B]: 0.45 } }));
+    const ordered = await orderModelsByJev({ body, models: [A, B], cfg: { apiKey: "laya-local", confidenceGate: 0.5, lowConfidence: "rank", source: "laya" }, log: { warn() {}, info() {} } });
+    // Probability order: A (0.55) then B (0.45).
+    expect(ordered).toEqual([A, B]);
+  });
+
+  it("falls back to `confidence` when answer_confidence is absent (TypeSafe shape unchanged)", async () => {
+    fetchAnswer({ type: "choice", choice: B, confidence: 0.9, probabilities: { [B]: 0.9 } });
+    const onDecision = vi.fn();
+    const ordered = await orderModelsByJev({ body, models: [A, B], cfg: { apiKey: "tsk-key", confidenceGate: 0.5 }, log: { warn() {}, info() {} }, onDecision });
+    expect(ordered).toEqual([B, A]);
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "jev", strategy: "jev", reason: "classified", confidence: 0.9 });
+  });
+
+  it("records source/strategy = laya on every path, not the hardcoded jev", async () => {
+    // HTTP error path
+    global.fetch = vi.fn(async () => ({ ok: false, status: 503 }));
+    let onDecision = vi.fn();
+    await orderModelsByJev({ body, models: [A, B], cfg: { apiKey: "laya-local", confidenceGate: 0.5, source: "laya" }, log: { warn() {}, info() {} }, onDecision });
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "laya", strategy: "laya", reason: "http-503" });
+    // no-usable-choice path
+    fetchAnswer({ type: "choice", choice: "9eric/not-in-combo", confidence: 0.9 });
+    onDecision = vi.fn();
+    await orderModelsByJev({ body, models: [A, B], cfg: { apiKey: "laya-local", confidenceGate: 0.5, source: "laya" }, log: { warn() {}, info() {} }, onDecision });
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "laya", strategy: "laya", reason: "no-usable-choice" });
+  });
+
+  it("defaults to jev source when cfg.source is omitted", async () => {
+    fetchAnswer({ type: "choice", choice: B, confidence: 0.9 });
+    const onDecision = vi.fn();
+    await orderModelsByJev({ body, models: [A, B], cfg: { apiKey: "tsk-key", confidenceGate: 0.5 }, log: { warn() {}, info() {} }, onDecision });
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "jev", strategy: "jev" });
+  });
+});

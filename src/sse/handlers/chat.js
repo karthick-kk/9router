@@ -28,6 +28,27 @@ import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { resolveSessionIdentity } from "open-sse/utils/sessionManager.js";
 
+// The "jev" and "laya" strategies both classify each request with a
+// /v1/systemone engine — TypeSafe Jev, or the self-hosted Laya sidecar — and
+// share orderModelsByJev plus the per-combo jevRubrics/jevMode/jevLowConfidence
+// settings. Only the endpoint, the auth key, and the recorded source name differ.
+const CLASSIFIER_STRATEGIES = new Set(["jev", "laya"]);
+function classifierCfg(strategy, settings, comboStrategies, modelStr) {
+  const isLaya = strategy === "laya";
+  return {
+    // Laya needs no key (the sidecar ignores Authorization unless LAYA_API_KEY
+    // is set on it), but orderModelsByJev fail-opens on an empty key — a dummy
+    // value passes that guard without implying a real credential.
+    apiKey: isLaya ? "laya-local" : settings.jevApiKey,
+    url: isLaya ? settings.layaUrl : settings.jevUrl,
+    timeoutMs: settings.jevTimeoutMs,
+    confidenceGate: settings.jevConfidenceGate,
+    mode: comboStrategies[modelStr]?.jevMode,
+    lowConfidence: comboStrategies[modelStr]?.jevLowConfidence,
+    source: isLaya ? "laya" : "jev",
+  };
+}
+
 /**
  * Composite-stage routing state must follow one conversation across the many
  * requests of a tool loop, so it keys on the same conversation-stable id the
@@ -173,12 +194,12 @@ export async function handleChat(request, clientRawRequest = null) {
     // state.turnCounter per request) — incrementing here too would double-count.
     if (st && !continuation && comboStrategy !== "composite-stage") st.turnCounter += 1;
     let routedModels = comboModels;
-    if (comboStrategy === "jev") {
+    if (CLASSIFIER_STRATEGIES.has(comboStrategy)) {
       routedModels = (await orderModelsByJev({
         body,
         models: comboModels,
         rubrics: comboStrategies[modelStr]?.jevRubrics,
-        cfg: { apiKey: settings.jevApiKey, url: settings.jevUrl, timeoutMs: settings.jevTimeoutMs, confidenceGate: settings.jevConfidenceGate, mode: comboStrategies[modelStr]?.jevMode, lowConfidence: comboStrategies[modelStr]?.jevLowConfidence },
+        cfg: classifierCfg(comboStrategy, settings, comboStrategies, modelStr),
         log,
         comboName: modelStr,
         sessionId: sid,
@@ -239,7 +260,7 @@ export async function handleChat(request, clientRawRequest = null) {
       adaptivePreset: comboStrategies[modelStr]?.adaptivePreset,
       // Jev already records its own decision (orderModelsByJev) — a second record
       // here would double-count. The backfill still runs against the Jev id.
-      onDecision: comboStrategy === "jev" ? undefined : (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
+      onDecision: CLASSIFIER_STRATEGIES.has(comboStrategy) ? undefined : (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
       onServed: (outcome) => { backfillOutcome(decision.id, outcome); },
       decisionSessionId: sid,
       decisionTurn: st ? st.turnCounter : 1,
@@ -271,7 +292,7 @@ export async function handleChat(request, clientRawRequest = null) {
       log,
       comboName: modelStr,
       comboStrategy,
-      onDecision: comboStrategy === "jev" ? undefined : (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
+      onDecision: CLASSIFIER_STRATEGIES.has(comboStrategy) ? undefined : (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
       onServed: (outcome) => { backfillOutcome(decision.id, outcome); },
       decisionSessionId: sid,
       decisionTurn: st ? st.turnCounter : 1,
@@ -307,12 +328,12 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       // state.turnCounter per request) — incrementing here too would double-count.
       if (st && !continuation && comboStrategy !== "composite-stage") st.turnCounter += 1;
       let routedModels = comboModels;
-      if (comboStrategy === "jev") {
+      if (CLASSIFIER_STRATEGIES.has(comboStrategy)) {
         routedModels = (await orderModelsByJev({
           body,
           models: comboModels,
           rubrics: comboStrategies[modelStr]?.jevRubrics,
-          cfg: { apiKey: chatSettings.jevApiKey, url: chatSettings.jevUrl, timeoutMs: chatSettings.jevTimeoutMs, confidenceGate: chatSettings.jevConfidenceGate, mode: comboStrategies[modelStr]?.jevMode, lowConfidence: comboStrategies[modelStr]?.jevLowConfidence },
+          cfg: classifierCfg(comboStrategy, chatSettings, comboStrategies, modelStr),
           log,
           comboName: modelStr,
           sessionId: sid,
@@ -371,7 +392,7 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
         adaptivePreset: comboStrategies[modelStr]?.adaptivePreset,
         // Jev already records its own decision (orderModelsByJev) — a second record
         // here would double-count. The backfill still runs against the Jev id.
-        onDecision: comboStrategy === "jev" ? undefined : (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
+        onDecision: CLASSIFIER_STRATEGIES.has(comboStrategy) ? undefined : (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
         onServed: (outcome) => { backfillOutcome(decision.id, outcome); },
         decisionSessionId: sid,
         decisionTurn: st ? st.turnCounter : 1,
