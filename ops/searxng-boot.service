@@ -1,0 +1,22 @@
+# User unit (linger enabled → runs at boot without login).
+# On every boot: re-pull searxng/searxng:latest and recreate the container on
+# the new image. Needed because Docker's own boot restart (restart: always)
+# brings containers back on the OLD image and never pulls; the pull_policy:
+# always in docker-compose.yml only fires when `docker compose up` runs.
+# Install: systemctl --user link ops/searxng-boot.service && systemctl --user enable searxng-boot.service
+[Unit]
+Description=9router: pull latest SearXNG image and restart the container
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ekrkaxx/dev/tools/9router
+ExecStart=/usr/bin/docker compose up -d searxng
+# Registry or docker daemon may not be ready moments after boot; retry
+# instead of giving up on the fresh image.
+Restart=on-failure
+RestartSec=30
+
+[Install]
+WantedBy=default.target
