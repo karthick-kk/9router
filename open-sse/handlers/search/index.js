@@ -7,7 +7,7 @@
  *   provider.searchViaChat   → wrap chat-completions (chatSearch.js)
  */
 
-import { buildSearchRequest } from "./callers.js";
+import { buildSearchRequest, getProviderSetting } from "./callers.js";
 import { normalizeSearchResponse } from "./normalizers.js";
 import { handleChatSearch } from "./chatSearch.js";
 import { fetchPublic } from "../../../src/shared/utils/ssrfGuard.js";
@@ -100,8 +100,14 @@ async function tryDedicatedProvider({ provider, providerConfig, body, credential
 
   log?.info?.("SEARCH", `${provider.id} | "${params.query.slice(0, 80)}" | type=${params.searchType}`);
 
+  // Client-supplied baseUrl overrides are untrusted → keep the SSRF-guarded
+  // fetch. The provider's own configured baseUrl is admin-controlled (trusted
+  // as-is, per resolveBaseUrl in callers.js), so a plain fetch suffices — this
+  // is what lets a self-hosted backend such as a local SearXNG on 127.0.0.1 work.
+  const doFetch = getProviderSetting(params, "baseUrl") ? fetchPublic : fetch;
+
   try {
-    const resp = await fetchPublic(url, { ...init, headers: sanitizeHeaders(init.headers), signal: controller.signal });
+    const resp = await doFetch(url, { ...init, headers: sanitizeHeaders(init.headers), signal: controller.signal });
     clearTimeout(timer);
     if (!resp.ok) {
       const errText = await resp.text().catch(() => "");
