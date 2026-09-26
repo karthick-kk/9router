@@ -1,0 +1,16 @@
+# SearXNG config for the local 9router web-search backend.
+# Docs: https://docs.searxng.org/admin/settings/
+# The entrypoint copies this to /etc/searxng/settings.yml on first boot and
+# never overwrites it — editing this file needs a container recreate to apply.
+use_default_settings: true
+
+server:
+  secret_key: "c6db79dceca8e0723b89035ae9db5b2937493f27245f996ca757b3a5ea5c67d7"
+  image_proxy: true
+
+search:
+  # json is required by the 9router searxng provider (?format=json);
+  # it is 403-Forbidden unless listed here.
+  formats:
+    - html
+    - json

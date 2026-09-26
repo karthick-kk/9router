@@ -127,6 +127,23 @@ services:
       # here so container rebuilds don't re-fetch it.
       - laya-hf-cache:/root/.cache/huggingface
 
+  # Local SearXNG backing the built-in no-auth web-search provider
+  # (dashboard: media-providers/webSearch/searxng). 9router is on host
+  # networking, so it reaches it at 127.0.0.1:8080 — the image's default
+  # port — via SEARXNG_URL above.
+  # pull_policy: always → every `docker compose up` re-fetches the newest
+  # :latest image before starting (same pattern as headroom).
+  # The image's entrypoint only honors SEARXNG_PORT as an env alias, so all
+  # tuning goes through the mounted settings.yml (json format is 403-
+  # Forbidden unless explicitly listed in search.formats).
+  searxng:
+    image: searxng/searxng:latest
+    pull_policy: always
+    restart: always
+    network_mode: host
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+
 networks:
   default:
     driver: none
