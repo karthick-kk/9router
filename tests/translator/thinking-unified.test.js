@@ -176,6 +176,35 @@ describe("applyThinking per provider format", () => {
     expect(out.thinking).toEqual({ type: "enabled" });
     expect(out.reasoning_effort).toBe("high");
   });
+  it("DeepSeek V4.1 max → chat_template_kwargs, not top-level (Ray-LLM 400s on top-level max)", () => {
+    const out = apply("openai", "deepseek-ai/DeepSeek-V4.1-Flash", { reasoning_effort: "max" });
+    expect(out.thinking).toEqual({ type: "enabled" });
+    expect(out.reasoning_effort).toBeUndefined();
+    expect(out.chat_template_kwargs).toEqual({ reasoning_effort: "max" });
+  });
+  it("DeepSeek V4.1 xhigh also rides chat_template_kwargs", () => {
+    const out = apply("openai", "deepseek-ai/DeepSeek-V4.1-Flash", { reasoning_effort: "xhigh" });
+    expect(out.chat_template_kwargs).toEqual({ reasoning_effort: "max" });
+    expect(out.reasoning_effort).toBeUndefined();
+  });
+  it("DeepSeek V4.1 high stays top-level (no chat_template_kwargs)", () => {
+    const out = apply("openai", "deepseek-ai/DeepSeek-V4.1-Flash", { reasoning_effort: "high" });
+    expect(out.reasoning_effort).toBe("high");
+    expect(out.chat_template_kwargs).toBeUndefined();
+  });
+  it("DeepSeek V4.1 disabled → no effort fields at all", () => {
+    const out = apply("openai", "deepseek-ai/DeepSeek-V4.1-Flash", { reasoning_effort: "none" });
+    expect(out.thinking).toEqual({ type: "disabled" });
+    expect(out.reasoning_effort).toBeUndefined();
+    expect(out.chat_template_kwargs).toBeUndefined();
+  });
+  it("DeepSeek V4.1 merges an existing client chat_template_kwargs", () => {
+    const out = apply("openai", "deepseek-ai/DeepSeek-V4.1-Flash", {
+      reasoning_effort: "max",
+      chat_template_kwargs: { enable_thinking: false },
+    });
+    expect(out.chat_template_kwargs).toEqual({ enable_thinking: false, reasoning_effort: "max" });
+  });
   it("Kimi on → reasoning_effort", () => {
     const out = apply("openai", "kimi-k2.6", { reasoning_effort: "high" }, "kimi");
     expect(out.reasoning_effort).toBe("high");
