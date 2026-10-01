@@ -135,10 +135,15 @@ export const MODEL_CAPABILITIES = {
   // DeepSeek API; it previously fell through to the generic *deepseek* pattern, whose
   // 128K/64K limits are kept here. The repeated fields are deliberate: an exact entry
   // short-circuits the pattern table, so a vision-only delta would drop them.
+  // thinkingEffortInChatTemplateKwargs: this engine generation (Ray-LLM V4.1)
+  // 400s on a TOP-LEVEL reasoning_effort "max" and only honours the value nested
+  // in chat_template_kwargs. Older V4 engines (Pro/0731) are the inverse — they
+  // stream reasoning_content ONLY from a top-level effort — so the flag is V4.1-scoped.
+  "deepseek-v4.1-flash": { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingEffortInChatTemplateKwargs: true, contextWindow: 1000000, maxOutput: 384000 },
   // Some providers (e.g. Kenari) expose this model under the hyphenated ID
   // "deepseek-v4-1-flash" (dash instead of dot); add it as an alias (#4293).
-  "deepseek-v4.1-flash": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
-  "deepseek-v4-1-flash": { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 1000000, maxOutput: 384000 },
+  // Same engine generation, so the effort-nesting flag applies to the alias too.
+  "deepseek-v4-1-flash": { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingEffortInChatTemplateKwargs: true, contextWindow: 1000000, maxOutput: 384000 },
   "deepseek-flash":      { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 128000, maxOutput: 64000 },
 
   // Qwen plain coder/text (no vision) — registry "vision-model" / "coder-model" aliases
@@ -468,7 +473,7 @@ export const PATTERN_CAPABILITIES = [
   // v4.1+ has real image input (probed live on Alibaba MaaS: correct color
   // read from a PNG). v4-pro / v4-flash-0731 accept image blocks but ignore
   // them (answered "Unknown"), so vision stays scoped to v4.* dotted releases.
-  { pattern: "*deepseek-v4.*",  caps: { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingEffortSupported: true, contextWindow: 1000000, maxOutput: 128000 } },
+  { pattern: "*deepseek-v4.*",  caps: { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingEffortSupported: true, thinkingEffortInChatTemplateKwargs: true, contextWindow: 1000000, maxOutput: 128000 } },
   { pattern: "*deepseek-v4*",   caps: { reasoning: true, thinkingFormat: "deepseek", thinkingEffortSupported: true, contextWindow: 1000000, maxOutput: 384000 } },
   { pattern: "*reasoner*",      caps: { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 128000 } },
   { pattern: "*deepseek-r*",    caps: { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 128000 } },

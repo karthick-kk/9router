@@ -205,6 +205,24 @@ describe("applyThinking per provider format", () => {
     });
     expect(out.chat_template_kwargs).toEqual({ enable_thinking: false, reasoning_effort: "max" });
   });
+  // Regression: the ctk-nesting is V4.1-scoped. Older V4 engines (Pro/0731) stream
+  // reasoning_content ONLY from a top-level effort, so they must keep top-level "max".
+  it("DeepSeek Pro-0813 max stays TOP-LEVEL (ctk would silently drop thinking)", () => {
+    const out = apply("openai", "deepseek-ai/DeepSeek-V4-Pro-0813", { reasoning_effort: "max" });
+    expect(out.thinking).toEqual({ type: "enabled" });
+    expect(out.reasoning_effort).toBe("max");
+    expect(out.chat_template_kwargs).toBeUndefined();
+  });
+  it("DeepSeek V4-Flash-0731 max stays TOP-LEVEL", () => {
+    const out = apply("openai", "deepseek-ai/DeepSeek-V4-Flash-0731", { reasoning_effort: "max" });
+    expect(out.reasoning_effort).toBe("max");
+    expect(out.chat_template_kwargs).toBeUndefined();
+  });
+  it("DeepSeek Pro-0813 high still top-level high (low→high mapping unchanged)", () => {
+    const out = apply("openai", "deepseek-ai/DeepSeek-V4-Pro-0813", { reasoning_effort: "low" });
+    expect(out.reasoning_effort).toBe("high");
+    expect(out.chat_template_kwargs).toBeUndefined();
+  });
   it("Kimi on → reasoning_effort", () => {
     const out = apply("openai", "kimi-k2.6", { reasoning_effort: "high" }, "kimi");
     expect(out.reasoning_effort).toBe("high");
