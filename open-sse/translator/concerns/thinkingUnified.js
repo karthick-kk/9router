@@ -364,14 +364,17 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display, model = "")
       // — clamp to high when the declared levels exclude it. Ray-LLM DeepSeek V4.1
       // deployments reject a TOP-LEVEL reasoning_effort "max" with a 400 (probed
       // live: top-level "high" is 200, chat_template_kwargs {reasoning_effort:"max"}
-      // is 200), so the max value must ride in chat_template_kwargs instead.
+      // is 200), so the max value must ride in chat_template_kwargs — but only for
+      // those engines. Older V4 engines (Pro/0731) stream reasoning_content ONLY
+      // from a top-level effort (probed live: ctk "max" answers 200 with no
+      // thinking), so they keep the top-level field.
       const level = toLevel(eff);
       const want = level === "xhigh" || level === "max" ? "max"
         : (level === "low" || level === "minimal") && supportedLevels?.includes("low") ? "low"
         : "high";
       if (want === "max" && supportedLevels && !supportedLevels.includes("max")) {
         body.reasoning_effort = "high";
-      } else if (want === "max") {
+      } else if (want === "max" && caps.thinkingEffortInChatTemplateKwargs) {
         const ctk = (body.chat_template_kwargs && typeof body.chat_template_kwargs === "object")
           ? body.chat_template_kwargs : {};
         ctk.reasoning_effort = "max";
