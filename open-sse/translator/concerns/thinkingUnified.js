@@ -325,10 +325,22 @@ function applyFormat(fmt, body, cfg, caps, supportedLevels, display) {
       body.thinking = { type: "enabled" };
       // DeepSeek: low/medium→high, xhigh/max→max. Some backends (mimo v2.5-pro/v2.6
       // on opencode-go, probed live) 400 on "max" — clamp to high when the declared
-      // levels exclude it.
+      // levels exclude it. Ray-LLM DeepSeek V4.1 deployments reject a TOP-LEVEL
+      // reasoning_effort "max" with a 400 (probed live: top-level "high" is 200,
+      // chat_template_kwargs {reasoning_effort:"max"} is 200), so the max value
+      // must ride in chat_template_kwargs instead.
       const level = toLevel(eff);
       const want = level === "xhigh" || level === "max" ? "max" : "high";
-      body.reasoning_effort = want === "max" && supportedLevels && !supportedLevels.includes("max") ? "high" : want;
+      if (want === "max" && supportedLevels && !supportedLevels.includes("max")) {
+        body.reasoning_effort = "high";
+      } else if (want === "max") {
+        const ctk = (body.chat_template_kwargs && typeof body.chat_template_kwargs === "object")
+          ? body.chat_template_kwargs : {};
+        ctk.reasoning_effort = "max";
+        body.chat_template_kwargs = ctk;
+      } else {
+        body.reasoning_effort = "high";
+      }
       break;
     }
     case "kimi": {
