@@ -16,6 +16,7 @@
 import { getCombos } from "@/lib/db/repos/combosRepo.js";
 import { getSettings } from "@/lib/db/repos/settingsRepo.js";
 import { pingModelByKind } from "@/app/api/models/test/ping.js";
+import { PROBE_TIMEOUT_MS } from "open-sse/config/runtimeConfig.js";
 import * as log from "../utils/logger.js";
 import {
   recordProbeResult,
@@ -27,7 +28,6 @@ import {
 
 const DEFAULT_INTERVAL_MS = 60 * 1000;
 const INITIAL_DELAY_MS = 15 * 1000;
-const PROBE_TIMEOUT_MS = 15000;
 const PROBE_CONCURRENCY = 3;
 
 // Probe cadence, ms. Overridable via COMBO_HEALTH_INTERVAL_MS so the probe
@@ -73,16 +73,12 @@ function baseUrl() {
 // completion, not a 1024-token answer (the interactive test keeps 1024 for
 // reasoning-model prefill, see issue #3010).
 async function defaultProbe(model) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
-    const result = await pingModelByKind(model, "llm", baseUrl(), { maxTokens: 32 });
+    const result = await pingModelByKind(model, "llm", baseUrl(), { maxTokens: 32, timeoutMs: PROBE_TIMEOUT_MS });
     return { ok: result.ok, error: result.error ?? null };
   } catch (err) {
     const detail = err?.cause?.code ? ` (${err.cause.code})` : "";
     return { ok: false, error: err?.name === "AbortError" ? `probe timeout after ${PROBE_TIMEOUT_MS}ms` : `probe threw: ${err?.message || String(err)}${detail}` };
-  } finally {
-    clearTimeout(timer);
   }
 }
 
