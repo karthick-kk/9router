@@ -23,9 +23,9 @@ const BLOCKED_HEADERS = new Set([
 
 /**
  * Validate + normalize an override payload. Returns { override } or { error }.
- * An override with no headers is normalized to null (= delete).
+ * An override with no headers/timeoutMs is normalized to null (= delete).
  */
-function normalizeOverride({ headers }) {
+function normalizeOverride({ headers, timeoutMs }) {
   const out = {};
 
   if (headers !== undefined && headers !== null) {
@@ -53,6 +53,14 @@ function normalizeOverride({ headers }) {
       clean[name] = value;
     }
     if (Object.keys(clean).length) out.headers = clean;
+  }
+
+  if (timeoutMs !== undefined && timeoutMs !== null) {
+    const ms = Number(timeoutMs);
+    if (!Number.isFinite(ms) || ms < 5000 || ms > 600000) {
+      return { error: "timeoutMs must be between 5000 and 600000 (5s–10min)" };
+    }
+    out.timeoutMs = ms;
   }
 
   return { override: Object.keys(out).length ? out : null };

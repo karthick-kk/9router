@@ -58,6 +58,31 @@ export const STREAM_FIRST_CHUNK_TIMEOUT_MS = envMs("STREAM_FIRST_CHUNK_TIMEOUT_M
 // Fetch connect timeout: abort if upstream doesn't return response headers within this duration
 export const FETCH_CONNECT_TIMEOUT_MS = envMs("FETCH_CONNECT_TIMEOUT_MS", 60 * 1000);
 
+// Adaptive connect timeout (opt-in): tighten the connect timeout per provider
+// toward its observed p95 time-to-headers × headroom. Never loosens past
+// FETCH_CONNECT_TIMEOUT_MS (static value stays the ceiling). Env:
+// ADAPTIVE_CONNECT_TIMEOUT=1 to enable; see open-sse/services/connect-timeout.js.
+export const ADAPTIVE_CONNECT_TIMEOUT = ["1", "true", "yes"].includes(
+  String(process.env.ADAPTIVE_CONNECT_TIMEOUT || "").toLowerCase()
+);
+// Samples (newest window) needed before a suggestion is trusted.
+export const ADAPTIVE_TIMEOUT_MIN_SAMPLES = envMs("ADAPTIVE_TIMEOUT_MIN_SAMPLES", 10);
+// Multiplier over p95 so normal jitter never trips the tightened timeout.
+export const ADAPTIVE_TIMEOUT_HEADROOM = (() => {
+  const raw = parseFloat(process.env.ADAPTIVE_TIMEOUT_HEADROOM);
+  return Number.isFinite(raw) && raw >= 1 ? raw : 2.0;
+})();
+// Never tighten below this — cold starts and one-off GC pauses still need room.
+export const ADAPTIVE_TIMEOUT_FLOOR_MS = envMs("ADAPTIVE_TIMEOUT_FLOOR_MS", 15 * 1000);
+
+// Health-probe timeout: a probe must be able to survive the same connect
+// window as a real request (or an alive-but-slow model is judged "dead" by
+// the tag while a real 90s-or-45s request would have served it fine), plus a
+// small margin for the 32-token completion body. Derived, not a separate knob:
+// the connect timeout is the only thing that needs tuning, and the tag must
+// track it by definition.
+export const PROBE_TIMEOUT_MS = FETCH_CONNECT_TIMEOUT_MS + 15 * 1000;
+
 // Gemini native TTS fetch timeout: abort if Google does not return response headers in time.
 export const GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS = envMs("GEMINI_NATIVE_TTS_FETCH_TIMEOUT_MS", 45 * 1000);
 

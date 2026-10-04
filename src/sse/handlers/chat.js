@@ -25,6 +25,7 @@ import { HTTP_STATUS } from "open-sse/config/runtimeConfig.js";
 import { detectFormatByEndpoint } from "open-sse/translator/formats.js";
 import * as log from "../utils/logger.js";
 import { updateProviderCredentials, checkAndRefreshToken } from "../services/tokenRefresh.js";
+import { recordProbeResult } from "../services/comboHealth.js";
 import { getProjectIdForConnection } from "open-sse/services/projectId.js";
 import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
@@ -506,7 +507,16 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       }
     });
 
-    if (result.success) return result.response;
+    if (result.success) {
+      // A live success is the strongest liveness evidence there is; clear any
+      // probe-built "suspect" count so a recovered model isn't held hostage
+      // until the next scheduled tick. Keyed by the raw member string: the
+      // health map (probe loop, filterOfflineModels) uses combo membership
+      // verbatim, and `provider` here is already alias-resolved (krb →
+      // kiro-cli) which would never match those keys.
+      recordProbeResult(modelStr, { ok: true });
+      return result.response;
+    }
 
     // Antigravity 409/429: refresh live quota to get exact resetAt before locking
     let quotaResetMs = null;
@@ -526,6 +536,13 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       : (await markAccountUnavailable(credentials.connectionId, result.status, result.error, provider, model, resetsAtMs)).shouldFallback;
 
     if (shouldFallback) {
+      // Feed an in-request liveness vote to the combo-health tag, but only on
+      // the connect-timeout signature — a shared-proxy blip (ECONNREFUSED on
+      // every member) or a rate-limit must NOT wipe a provider's whole tag set.
+      // Same raw-member key as above.
+      if (result.status === 502 && typeof result.error === "string" && result.error.includes("fetch connect timeout")) {
+        recordProbeResult(modelStr, { ok: false, error: result.error });
+      }
       log.warn("FALLBACK", `⇄ ACC:${credentials.connectionName} UNAVAILABLE (${result.status}) → NEXT ACCOUNT`);
       excludeConnectionIds.add(credentials.connectionId);
       lastError = result.error;

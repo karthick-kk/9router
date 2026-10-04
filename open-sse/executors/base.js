@@ -4,6 +4,7 @@ import { proxyAwareFetch } from "../utils/proxyFetch.js";
 import { dbg } from "../utils/debugLog.js";
 import { ANTHROPIC_API_VERSION, OPENAI_COMPAT_BASE, ANTHROPIC_COMPAT_BASE } from "../providers/shared.js";
 import { resolveOpenAICompatibleApiType } from "../services/provider.js";
+import { recordLatency, suggestTimeout, evictProvider, startAdaptiveObserver } from "../services/connect-timeout.js";
 
 /**
  * BaseExecutor - Base class for provider executors
@@ -98,6 +99,9 @@ export class BaseExecutor {
   }
 
   async execute({ model, body, stream, credentials, signal, log, proxyOptions = null, providerOverrides = null }) {
+    // Lazily start the periodic latency-window dump once the feature is exercised
+    // in production (idempotent; the observer no-ops unless ADAPTIVE_CONNECT_TIMEOUT).
+    startAdaptiveObserver(log);
     const fallbackCount = this.getFallbackCount();
     let lastError = null;
     let lastStatus = 0;
@@ -133,10 +137,13 @@ export class BaseExecutor {
 
       if (!retryAttemptsByUrl[urlIndex]) retryAttemptsByUrl[urlIndex] = 0;
 
-      // Abort if upstream doesn't return response headers within connection timeout
+      // Abort if upstream doesn't return response headers within connection timeout.
+      // Precedence: user per-provider override → adaptive suggestion (live p95,
+      // tighten-only, opt-in) → registry default → global static.
       const connectCtrl = new AbortController();
-      const timeoutMs = this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
-      const connectTimer = setTimeout(() => connectCtrl.abort(new Error("fetch connect timeout")), timeoutMs);
+      const timeoutMs = providerOverrides?.timeoutMs || suggestTimeout(this.provider) || this.config?.timeoutMs || FETCH_CONNECT_TIMEOUT_MS;
+      const connectReason = new Error("fetch connect timeout");
+      const connectTimer = setTimeout(() => connectCtrl.abort(connectReason), timeoutMs);
       const mergedSignal = signal ? AbortSignal.any([signal, connectCtrl.signal]) : connectCtrl.signal;
 
       try {
@@ -150,9 +157,13 @@ export class BaseExecutor {
           signal: mergedSignal
         }, proxyOptions);
         clearTimeout(connectTimer);
+        const ttftMs = Date.now() - fetchT0;
+        // Feed the adaptive timeout window with 2xx header-latency only: a 5xx
+        // that answers fast (proxy alive, backend dead) must not tighten budgets.
+        if (response.ok) recordLatency(this.provider, ttftMs);
         const ct = response.headers?.get?.("content-type") || "";
         const cl = response.headers?.get?.("content-length") || "?";
-        dbg("FETCH", `${this.provider.toUpperCase()} ← ${response.status} | ttft=${Date.now() - fetchT0}ms | ct=${ct} | cl=${cl}`);
+        dbg("FETCH", `${this.provider.toUpperCase()} ← ${response.status} | ttft=${ttftMs}ms | ct=${ct} | cl=${cl}`);
 
         if (await tryRetry(urlIndex, response.status, `status ${response.status}`, response)) { urlIndex--; continue; }
 
@@ -166,13 +177,25 @@ export class BaseExecutor {
       } catch (error) {
         clearTimeout(connectTimer);
         lastError = error;
-        const isConnectTimeout = connectCtrl.signal.aborted && error.name === "AbortError";
+        // connectCtrl is only ever aborted by the connect timer, so its signal
+        // is the authoritative "the connect phase timed out" flag. (Not
+        // error.name === "AbortError": under undici the rejection is a plain
+        // Error with message "fetch connect timeout", never name "AbortError".)
+        const isConnectTimeout = connectCtrl.signal.aborted;
         dbg("FETCH", `${this.provider.toUpperCase()} ✖ ${error.name}: ${error.message}${isConnectTimeout ? " (connect timeout)" : ""}`);
-        // Connect timeout is internal — convert to retryable network error, don't propagate AbortError
-        if (error.name === "AbortError" && !isConnectTimeout) throw error;
+        // A connect timeout means this provider's latency just changed (down, or
+        // back-but-slower). Drop its adaptive window so stale "fast" samples can't
+        // keep starving a recovering upstream under a budget it no longer meets.
+        if (isConnectTimeout) evictProvider(this.provider);
+        // A client-side cancel (caller's signal aborted) is not an upstream
+        // failure — don't retry or 502, propagate it.
+        if (!isConnectTimeout && mergedSignal.aborted) throw error;
 
-        // Map network/fetch exceptions to 502 retry config
-        if (await tryRetry(urlIndex, HTTP_STATUS.BAD_GATEWAY, `network "${error.message}"`)) { urlIndex--; continue; }
+        // A connect timeout must NOT take the timed 502 retry: the connect phase
+        // didn't complete, so retrying the same URL 3s later will hit the same
+        // hang and multiply the cost. A plain network error (ECONNREFUSED on a
+        // proxy restart) can self-heal, so it keeps the 502 retry config.
+        if (!isConnectTimeout && (await tryRetry(urlIndex, HTTP_STATUS.BAD_GATEWAY, `network "${error.message}"`))) { urlIndex--; continue; }
 
         if (urlIndex + 1 < fallbackCount) {
           log?.debug?.("RETRY", `Error on ${url}, trying fallback ${urlIndex + 1}`);

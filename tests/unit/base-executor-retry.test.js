@@ -21,7 +21,7 @@ function makeExec(config) {
 
 const creds = { apiKey: "k" };
 
-beforeEach(() => fetchMock.mockReset());
+beforeEach(() => { fetchMock.mockReset(); });
 
 describe("BaseExecutor.execute — retry by status (config-driven)", () => {
   it("retries 502 `attempts` times then succeeds", async () => {
@@ -81,6 +81,37 @@ describe("BaseExecutor.execute — network error retry/fallback", () => {
     }
     expect(thrown?.message).toBe("boom");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("BaseExecutor.execute — connect timeout does not timed-retry", () => {
+  it("throws once on connect timeout (no 502 timed retry multiplication)", async () => {
+    // 100ms config-level connect timeout fires fast in real time, no fake timers.
+    const ex = makeExec({ baseUrl: "https://x/api", timeoutMs: 100, retry: { 502: { attempts: 3, delayMs: 0 } } });
+    // A hung upstream: reject only on the connect controller's abort.
+    fetchMock.mockImplementation((url, opts) => new Promise((_resolve, reject) => {
+      const sig = opts?.signal;
+      if (sig?.aborted) return reject(sig.reason ?? new Error("aborted"));
+      sig?.addEventListener("abort", () => reject(sig.reason ?? new Error("aborted")));
+    }));
+    let err;
+    try {
+      await ex.execute({ model: "m", body: {}, stream: false, credentials: creds });
+    } catch (e) {
+      err = e;
+    }
+    expect(err?.message).toBe("fetch connect timeout");
+    expect(fetchMock).toHaveBeenCalledTimes(1); // no timed 502 retry
+  });
+
+  it("still timed-retries an immediate network error (self-healing path)", async () => {
+    const ex = makeExec({ baseUrl: "https://x/api", retry: { 502: { attempts: 1, delayMs: 0 } } });
+    fetchMock
+      .mockImplementationOnce(async () => { throw new Error("ECONNREFUSED"); })
+      .mockResolvedValueOnce(res(200));
+    const out = await ex.execute({ model: "m", body: {}, stream: false, credentials: creds });
+    expect(out.response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
 
