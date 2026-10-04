@@ -16,6 +16,8 @@ export default function CustomConfigCard({ providerId }) {
   const [builtin, setBuiltin] = useState({});
   const [hasOverride, setHasOverride] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [timeoutMs, setTimeoutMs] = useState(null);
+  const [timeoutInput, setTimeoutInput] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -29,7 +31,9 @@ export default function CustomConfigCard({ providerId }) {
         const headerRows = Object.entries(effective).map(([name, value]) => ({ name, value }));
         setBuiltin(builtinHeaders);
         setRows(headerRows.length ? headerRows : [{ name: "", value: "" }]);
-        setHasOverride(Object.keys(data.headers || {}).length > 0);
+        setHasOverride(Object.keys(data.headers || {}).length > 0 || !!data.timeoutMs);
+        setTimeoutMs(data.timeoutMs || null);
+        setTimeoutInput(data.timeoutMs ? String(data.timeoutMs) : "");
       })
       .catch(() => {});
     return () => { cancelled = true; };
@@ -60,27 +64,41 @@ export default function CustomConfigCard({ providerId }) {
       if (r.value !== builtin[name]) headers[name] = r.value;
     }
 
+    const payload = {};
+    if (Object.keys(headers).length) payload.headers = headers;
+    if (timeoutInput.trim()) {
+      const ms = Number(timeoutInput.trim());
+      if (!Number.isFinite(ms) || ms < 5000 || ms > 600000) {
+        notify.error("Timeout must be between 5000 and 600000 (5s–10min)");
+        return;
+      }
+      payload.timeoutMs = ms;
+    }
+
     setSaving(true);
     try {
       const res = await fetch(`/api/providers/${providerId}/overrides`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ headers }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         notify.error(err.error || "Failed to save");
         return;
       }
-      setHasOverride(Object.keys(headers).length > 0);
-      notify.success("Custom headers saved");
+      setHasOverride(Object.keys(headers).length > 0 || !!timeoutInput.trim());
+      setTimeoutMs(Number(timeoutInput) || null);
+      notify.success("Custom config saved");
     } finally {
       setSaving(false);
     }
-  }, [rows, builtin, providerId, notify]);
+  }, [rows, builtin, providerId, notify, timeoutInput]);
 
   const resetToBuiltin = () => {
     setRows(Object.entries(builtin).map(([name, value]) => ({ name, value })));
+    setTimeoutInput("");
+    setTimeoutMs(null);
   };
 
   // Only render when there is something to customize: registry headers or existing overrides
@@ -95,7 +113,7 @@ export default function CustomConfigCard({ providerId }) {
       >
         <div className="flex items-center gap-2">
           <span className="material-symbols-outlined text-primary text-[20px]">tune</span>
-          <span className="text-sm font-semibold">Custom Headers</span>
+          <span className="text-sm font-semibold">Custom Config</span>
           {hasOverride && (
             <Badge variant="success" size="sm">Active</Badge>
           )}
@@ -107,6 +125,25 @@ export default function CustomConfigCard({ providerId }) {
 
       {expanded && (
         <div className="mt-3 border-t border-border pt-3">
+          {/* Connect timeout override */}
+            <div className="mb-4 pb-4 border-b border-border">
+              <label className="text-xs font-semibold text-text">Connect Timeout (ms)</label>
+              <p className="mb-2 text-xs text-text-muted">Max time to wait for response headers. Range: 5000–600000 (5s–10min).</p>
+              <input
+                type="number"
+                value={timeoutInput}
+                onChange={(e) => setTimeoutInput(e.target.value)}
+                placeholder="90000"
+                min="5000"
+                max="600000"
+                className="w-full rounded-md border border-border bg-background px-2 py-1.5 text-sm focus:border-primary focus:outline-none"
+              />
+              {timeoutMs && (
+                <p className="mt-1 text-xs text-text-muted">Current: {timeoutMs}ms</p>
+              )}
+            </div>
+
+          {/* Custom headers */}
           <div className="flex flex-col gap-2">
             {rows.map((row, i) => {
               const overridden = row.name.trim() in builtin && row.value !== builtin[row.name.trim()];
