@@ -114,5 +114,6 @@ acme-authrecord
 .diagram-design
 
 # Compose backups / local variants
+docker-compose.yml
 docker-compose.yml.bak
 docker-compose_minimal.yml
