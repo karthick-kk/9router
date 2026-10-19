@@ -16,6 +16,16 @@ import { ROLE, OPENAI_BLOCK, RESPONSES_ITEM } from "../schema/index.js";
 
 const MAX_TOOL_NAME_LEN = 128;
 
+// Meta's Responses API rejects max_output_tokens below 16, but clients such as
+// Claude Code's /model probe legitimately send tiny max_tokens values. Clamp
+// the translated floor so small probes pass through instead of 400ing.
+const MIN_RESPONSES_OUTPUT_TOKENS = 16;
+
+function clampResponsesOutputTokens(value) {
+  if (typeof value !== "number" || !Number.isFinite(value)) return value;
+  return Math.max(Math.floor(value), MIN_RESPONSES_OUTPUT_TOKENS);
+}
+
 /**
  * Convert OpenAI Responses API request to OpenAI Chat Completions format
  */
@@ -326,6 +336,9 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
       if (out.max_completion_tokens !== undefined) out.max_output_tokens = out.max_completion_tokens;
       else if (out.max_tokens !== undefined) out.max_output_tokens = out.max_tokens;
     }
+    if (out.max_output_tokens !== undefined) {
+      out.max_output_tokens = clampResponsesOutputTokens(out.max_output_tokens);
+    }
     delete out.max_tokens;
     delete out.max_completion_tokens;
     return out;
@@ -447,11 +460,11 @@ export function openaiToOpenAIResponsesRequest(model, body, stream, credentials)
   // Pass through other relevant fields
   if (body.temperature !== undefined) result.temperature = body.temperature;
   if (body.max_output_tokens !== undefined) {
-    result.max_output_tokens = body.max_output_tokens;
+    result.max_output_tokens = clampResponsesOutputTokens(body.max_output_tokens);
   } else if (body.max_completion_tokens !== undefined) {
-    result.max_output_tokens = body.max_completion_tokens;
+    result.max_output_tokens = clampResponsesOutputTokens(body.max_completion_tokens);
   } else if (body.max_tokens !== undefined) {
-    result.max_output_tokens = body.max_tokens;
+    result.max_output_tokens = clampResponsesOutputTokens(body.max_tokens);
   }
   if (body.top_p !== undefined) result.top_p = body.top_p;
   if (body.reasoning !== undefined) result.reasoning = body.reasoning;
