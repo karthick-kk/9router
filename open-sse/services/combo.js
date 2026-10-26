@@ -26,8 +26,11 @@ export { orderAdaptiveModels, recordAttempt, resetAdaptiveState } from "./combo/
 // them untouched). For SSE, returns { outcome: "content"|"empty", finishReason, response }
 // where `response` is a faithful replay of the original stream (head buffer + live reader).
 async function peekComboResponse(result, log) {
-  const ct = (result.headers.get("content-type") || "").toLowerCase();
-  if (!result.body || !ct.includes("text/event-stream")) return null;
+  // Tolerate non-Response shapes (e.g. test mocks that return plain objects): no
+  // headers/body means it can't be an SSE stream, so leave it to the non-streaming
+  // path rather than throwing on `undefined.get(...)`.
+  const ct = (result?.headers?.get?.("content-type") || "").toLowerCase();
+  if (!result?.body || !ct.includes("text/event-stream")) return null;
   const peeked = await peekStreamForContent(result.body);
   const response = new Response(reconstructStream(peeked.head, peeked.reader, peeked.pendingRead), {
     status: result.status,
