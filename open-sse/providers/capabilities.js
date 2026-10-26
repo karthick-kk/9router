@@ -188,6 +188,12 @@ export const MODEL_CAPABILITIES = {
   // "deepseek-v4-1-flash" (dash instead of dot); add it as an alias (#4293).
   // Same engine generation, so the effort-nesting flag applies to the alias too.
   "deepseek-v4-1-flash": { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingEffortInChatTemplateKwargs: true, contextWindow: 1000000, maxOutput: 384000 },
+  // Canonical capitalized form (e.g. "deepseek-ai/DeepSeek-V4.1-Flash"). The exact
+  // MODEL_CAPABILITIES lookup above is case-sensitive, so without this entry the id
+  // falls through to the *deepseek-v4.* pattern — which deliberately does NOT carry
+  // the ctk flag (the OpenCode Zen free lane forwards "max" verbatim). The capitalized
+  // id is the paid Ray-LLM V4.1 engine, so the flag belongs here.
+  "DeepSeek-V4.1-Flash": { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingEffortInChatTemplateKwargs: true, contextWindow: 1000000, maxOutput: 384000 },
   "deepseek-flash":      { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 128000, maxOutput: 64000 },
 
   // Qwen plain coder/text (no vision) — registry "vision-model" / "coder-model" aliases
