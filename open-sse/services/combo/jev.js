@@ -142,6 +142,39 @@ function autoRubric(modelStr) {
 
 const HEALTH_VETO_THRESHOLD = 0.4;
 
+// Hard capabilities = input modalities (same set as combo.js / capacityAdapter.js —
+// kept local to avoid an import cycle: combo.js re-exports this module). A model
+// missing one cannot serve the request at all (the data gets stripped downstream).
+const HARD_CAPS = new Set(["vision", "pdf", "audioInput", "videoInput"]);
+
+/**
+ * Scope the classifier's candidates by the request's hard-capability needs.
+ * Only models that can actually serve the request (e.g. vision-capable ones when
+ * the turn carries an image) are scored, so the pick itself is servable and the
+ * capacity adapter stays a fallback, not the primary router. Models missing a
+ * required hard cap stay in the serve order BEHIND the scored candidates — the
+ * failover loop is intact. When NO model qualifies, the full list is scored and
+ * the adapter handles the miss (same as before this scoping existed).
+ *
+ * @param {string[]} models combo models in serve order
+ * @param {Set<string>|null|undefined} required from detectRequiredCapabilities
+ * @returns {{candidates: string[], demoted: string[]}}
+ */
+function scopeByHardCaps(models, required) {
+  const hard = [...(required || [])].filter((c) => HARD_CAPS.has(c));
+  if (hard.length === 0) return { candidates: models, demoted: [] };
+  const satisfies = (m) => {
+    const slash = m.indexOf("/");
+    const provider = slash > 0 ? m.slice(0, slash) : "";
+    const caps = getCapabilitiesForModel(provider, slash > 0 ? m.slice(slash + 1) : m);
+    return hard.every((c) => caps[c] === true);
+  };
+  const candidates = models.filter(satisfies);
+  // None qualifies → score everything (fail-open); the adapter covers the gap.
+  if (candidates.length === 0) return { candidates: models, demoted: [] };
+  return { candidates, demoted: models.filter((m) => !candidates.includes(m)) };
+}
+
 function healthFactorFor(model, now) {
   const s = getAdaptiveStats(model, now);
   // Speed axis may only demote (≤1): a fast model earns no bonus, a slow one
@@ -167,7 +200,7 @@ function demoteSick(models, now) {
  *
  * @returns {Promise<string[]|null>} reordered models, or null to keep current order.
  */
-export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, log, comboName = null, sessionId = null, turn = 1, onDecision }) {
+export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, log, comboName = null, sessionId = null, turn = 1, requiredCapabilities = null, onDecision }) {
   // The wire protocol is shared by both TypeSafe Jev and the self-hosted Laya
   // sidecar, so the recorded strategy/source name is caller-supplied ("jev" by
   // default) rather than hardcoded — the Routing Intelligence dashboard then
@@ -188,6 +221,12 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
     return null;
   }
 
+  // Hard-capability scoping happens BEFORE the classifier call: when the turn
+  // needs vision (etc.), only servable models are scored, so the pick is
+  // servable too and the capacity adapter stays a fallback. Demoted models keep
+  // their relative order behind the scored candidates.
+  const { candidates, demoted } = scopeByHardCaps(models, requiredCapabilities);
+
   const { userText, continuation } = extractTurn(body);
   const preview = userText.slice(0, 200);
   if (!userText.trim()) {
@@ -200,7 +239,7 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
   const gate = Number.isFinite(cfg.confidenceGate) ? cfg.confidenceGate : JEV_DEFAULTS.confidenceGate;
 
   const criteria = {};
-  for (const m of models) criteria[m] = rubrics[m]?.trim() || autoRubric(m);
+  for (const m of candidates) criteria[m] = rubrics[m]?.trim() || autoRubric(m);
   const modePolicy = JEV_MODES[cfg.mode] || JEV_MODES.efficient;
 
   const state = {
@@ -246,7 +285,7 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
   const elapsed = Date.now() - t0;
   const probabilities = answer?.probabilities && typeof answer.probabilities === "object" ? answer.probabilities : {};
 
-  if (answer?.type !== "choice" || !models.includes(answer.choice)) {
+  if (answer?.type !== "choice" || !candidates.includes(answer.choice)) {
     log?.warn?.("JEV", "Classifier returned no usable choice, keeping combo order");
     emit({ source, reason: "no-usable-choice", picked: models[0], confidence: null, scores: { probabilities }, preview, classifierMs: elapsed });
     return null;
@@ -265,16 +304,16 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
       const now = Date.now();
       // Vetoed models sink to the end (sentinel -1); the rest keep Jev's
       // probability order, ties broken by combo order (stable sort).
-      const ranked = [...models]
+      const ranked = [...candidates]
         .map((m) => ({ m, p: healthFactorFor(m, now) < HEALTH_VETO_THRESHOLD ? -1 : probabilities[m] || 0 }))
         .sort((a, b) => b.p - a.p)
         .map((e) => e.m);
-      log?.info?.("JEV", `Low confidence ${confidence.toFixed(2)}, following Jev ranking: ${ranked.join(" > ")}`);
-      emit({ source, reason: "ranked", picked: ranked[0], confidence, scores: { probabilities }, preview, classifierMs: elapsed });
-      return ranked;
+      log?.info?.("JEV", `Low confidence ${confidence.toFixed(2)}, following Jev ranking: ${[...ranked, ...demoted].join(" > ")}`);
+      emit({ source, reason: "ranked", picked: ranked[0], confidence, scores: { probabilities, demoted }, preview, classifierMs: elapsed });
+      return [...ranked, ...demoted];
     }
     log?.info?.("JEV", `Low confidence ${confidence.toFixed(2)} for ${answer.choice}, keeping combo order`);
-    emit({ source, reason: "below-gate-held", picked: models[0], confidence, scores: { probabilities }, preview, classifierMs: elapsed });
+    emit({ source, reason: "below-gate-held", picked: models[0], confidence, scores: { probabilities, demoted }, preview, classifierMs: elapsed });
     return null;
   }
 
@@ -285,12 +324,12 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
   // pre-veto order is returned unchanged (failover loop is the backstop).
   const pickFactor = healthFactorFor(answer.choice, Date.now());
   if (pickFactor < HEALTH_VETO_THRESHOLD) {
-    const { order, sick } = demoteSick(models, Date.now());
+    const { order, sick } = demoteSick(candidates, Date.now());
     log?.info?.("JEV", `Vetoed ${answer.choice} (health ${pickFactor.toFixed(2)} < ${HEALTH_VETO_THRESHOLD}, sick: ${sick.join(", ")}), keeping combo order`);
-    emit({ source, reason: "health-veto", picked: order[0], confidence, scores: { probabilities, veto: { picked: answer.choice, factor: pickFactor, sick } }, preview, classifierMs: elapsed });
-    return order;
+    emit({ source, reason: "health-veto", picked: order[0], confidence, scores: { probabilities, demoted, veto: { picked: answer.choice, factor: pickFactor, sick } }, preview, classifierMs: elapsed });
+    return [...order, ...demoted];
   }
-  log?.info?.("JEV", `Picked ${answer.choice} (conf ${confidence.toFixed(2)})`);
-  emit({ source, reason: "classified", picked: answer.choice, confidence, scores: { probabilities }, preview, classifierMs: elapsed });
-  return [answer.choice, ...models.filter((m) => m !== answer.choice)];
+  log?.info?.("JEV", `Picked ${answer.choice} (conf ${confidence.toFixed(2)})${demoted.length ? `, vision-scope: ${demoted.length} non-vision model(s) demoted` : ""}`);
+  emit({ source, reason: "classified", picked: answer.choice, confidence, scores: { probabilities, demoted }, preview, classifierMs: elapsed });
+  return [answer.choice, ...candidates.filter((m) => m !== answer.choice), ...demoted];
 }
