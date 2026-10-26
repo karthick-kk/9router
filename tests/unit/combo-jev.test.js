@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import { orderModelsByJev, extractTurn } from "../../open-sse/services/combo/jev.js";
+import { orderModelsByJev, extractTurn, parseDecisionBody } from "../../open-sse/services/combo/jev.js";
 import { recordAttempt, resetAdaptiveState } from "../../open-sse/services/combo/adaptive-state.js";
 
 const MODELS = ["oc/fast-model", "oc/smart-model"];
@@ -9,7 +9,7 @@ const CFG = { apiKey: "test-key", confidenceGate: 0.5 };
 function jevResponse(choice, { confidence = 0.9, type = "choice" } = {}) {
   return {
     ok: true,
-    json: async () => ({ answers: { route: { type, choice, confidence, probabilities: {} } } }),
+    text: async () => JSON.stringify({ answers: { route: { type, choice, confidence, probabilities: {} } } }),
   };
 }
 
@@ -112,7 +112,7 @@ describe("jev combo classifier", () => {
   it("follows the probability ranking when low confidence and mode=rank", async () => {
     fetchMock.mockResolvedValue({
       ok: true,
-      json: async () => ({ answers: { route: {
+      text: async () => JSON.stringify({ answers: { route: {
         type: "choice", choice: "oc/smart-model", confidence: 0.3,
         probabilities: { "oc/smart-model": 0.34, "oc/fast-model": 0.66 },
       } } }),
@@ -158,8 +158,8 @@ describe("decision capture", () => {
   ])("route %o → reason %s", async (answer, cfgExtra, reason, confidence, expectedOrder) => {
     const onDecision = vi.fn();
     global.fetch = answer === null
-      ? vi.fn(async () => ({ ok: true, json: async () => ({}) }))
-      : vi.fn(async () => ({ ok: true, json: async () => ({ answers: { route: answer } }) }));
+      ? vi.fn(async () => ({ ok: true, text: async () => "{}" }))
+      : vi.fn(async () => ({ ok: true, text: async () => JSON.stringify({ answers: { route: answer } }) }));
     const out = await orderModelsByJev(opts({ cfg: { apiKey: "k", timeoutMs: 1000, ...cfgExtra }, onDecision, turn: 2, comboName: "jev-demo", sessionId: "s1" }));
     expect(out).toEqual(expectedOrder);
     expect(onDecision).toHaveBeenCalledTimes(1);
@@ -226,7 +226,7 @@ describe("decision capture", () => {
   });
 
   it("never throws out of the decision path even if onDecision throws", async () => {
-    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ answers: { route: { type: "choice", choice: "acme/B", confidence: 0.9 } } }) }));
+    global.fetch = vi.fn(async () => ({ ok: true, text: async () => JSON.stringify({ answers: { route: { type: "choice", choice: "acme/B", confidence: 0.9 } } }) }));
     await expect(orderModelsByJev(opts({ onDecision: () => { throw new Error("boom"); }, comboName: "c" }))).resolves.toEqual(["acme/B", "acme/A"]);
   });
 });
@@ -238,7 +238,7 @@ describe("health veto (live model health overrides Jev's pick)", () => {
   const CFG = { apiKey: "k", confidenceGate: 0.5 };
   const stubAnswer = (choice, extra = {}) => vi.fn(async () => ({
     ok: true,
-    json: async () => ({ answers: { route: { type: "choice", choice, confidence: 0.9, probabilities: { [choice]: 0.9 }, ...extra } } }),
+    text: async () => JSON.stringify({ answers: { route: { type: "choice", choice, confidence: 0.9, probabilities: { [choice]: 0.9 }, ...extra } } }),
   }));
 
   beforeEach(() => {
@@ -309,7 +309,7 @@ describe("laya compatibility (shared /v1/systemone engine)", () => {
     type: "choice", choice, confidence: 0.15, ...extra, // 0.15 = laya's entropy-style `confidence`
   });
   const fetchAnswer = (ans) => {
-    global.fetch = vi.fn(async () => ({ ok: true, json: async () => ({ answers: { route: ans } }) }));
+    global.fetch = vi.fn(async () => ({ ok: true, text: async () => JSON.stringify({ answers: { route: ans } }) }));
   };
 
   afterEach(() => vi.unstubAllGlobals());
@@ -358,5 +358,51 @@ describe("laya compatibility (shared /v1/systemone engine)", () => {
     const onDecision = vi.fn();
     await orderModelsByJev({ body, models: [A, B], cfg: { apiKey: "tsk-key", confidenceGate: 0.5 }, log: { warn() {}, info() {} }, onDecision });
     expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "jev", strategy: "jev" });
+  });
+});
+
+describe("parseDecisionBody (tolerant response parsing)", () => {
+  const clean = JSON.stringify({ answers: { route: { type: "choice", choice: "x", confidence: 0.9 } } });
+  // The acme-proxy appends a stream terminator after the CLEF decision JSON.
+  const sseTailed = clean + 'data: {"id": "error-stream-terminated", "content": "x"}\n\ndata: [DONE]\n';
+
+  it("parses a clean JSON body byte-identically", () => {
+    expect(parseDecisionBody(clean)).toEqual(JSON.parse(clean));
+  });
+
+  it("extracts the leading object from an SSE-tailed CLEF body", () => {
+    expect(parseDecisionBody(sseTailed)).toEqual(JSON.parse(clean));
+  });
+
+  it("returns null on empty / non-object / garbage input", () => {
+    expect(parseDecisionBody("")).toBeNull();
+    expect(parseDecisionBody("   ")).toBeNull();
+    expect(parseDecisionBody("no braces here")).toBeNull();
+    expect(parseDecisionBody("{unterminated")).toBeNull();
+  });
+
+  it("respects braces inside strings when scanning", () => {
+    const body = '{"a":"{ }"}' + "trailing";
+    expect(parseDecisionBody(body)).toEqual({ a: "{ }" });
+  });
+
+  it("CLEF end-to-end: an SSE-tailed body still classifies and reorders", async () => {
+    const cleanPick = JSON.stringify({
+      model: "Cloudflare/clef",
+      answers: { route: { type: "choice", choice: "acme/x", confidence: 0.82, probabilities: { "acme/x": 0.82, "acme/A": 0.18 } } },
+    });
+    const onDecision = vi.fn();
+    global.fetch = vi.fn(async () => ({ ok: true, text: async () => cleanPick + 'data: [DONE]\n' }));
+    const ordered = await orderModelsByJev({
+      body: { messages: [{ role: "user", content: "refactor" }] },
+      models: ["acme/A", "acme/x"],
+      cfg: { apiKey: "clef-local", confidenceGate: 0.5, source: "clef", model: "Cloudflare/clef" },
+      log: { warn() {}, info() {} },
+      onDecision,
+    });
+    expect(ordered).toEqual(["acme/x", "acme/A"]);
+    const sent = JSON.parse(global.fetch.mock.calls[0][1].body);
+    expect(sent.model).toBe("Cloudflare/clef");
+    expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "clef", strategy: "clef", reason: "classified", confidence: 0.82 });
   });
 });

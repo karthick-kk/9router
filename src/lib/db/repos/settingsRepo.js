@@ -25,6 +25,13 @@ const DEFAULT_SETTINGS = {
   // Jev, no key needed (laya-serve ignores Authorization unless LAYA_API_KEY is
   // set on the sidecar). Reached over the host network, so 127.0.0.1.
   layaUrl: "http://127.0.0.1:8010/v1/systemone",
+  // Cloudflare CLEF decision model, reached through the Acme acme-proxy
+  // (host-networked at 127.0.0.1:7999; the proxy injects Acme service
+  // credentials, so no key is needed here). Same /v1/systemone protocol as
+  // Jev/Laya; the proxy appends a stream terminator after the decision JSON,
+  // which orderModelsByJev's tolerant parse handles.
+  clefUrl: "http://127.0.0.1:7999/v1/systemone",
+  clefModel: "Cloudflare/clef",
   capacityAdapter: {
     vision: { enabled: true, roundRobin: false, models: [] },
     pdf: { enabled: false, roundRobin: false, models: [] },

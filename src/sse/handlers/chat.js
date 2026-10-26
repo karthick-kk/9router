@@ -32,24 +32,30 @@ import { stripModelContextMarker } from "open-sse/utils/modelMarkers.js";
 import { getKeyAccessContext, enforceKeyAccess, filterAdapterModels } from "../services/keyAccess.js";
 import { resolveSmartChoice } from "../services/systemoneRouter.js";
 
-// The "jev" and "laya" strategies both classify each request with a
-// /v1/systemone engine — TypeSafe Jev, or the self-hosted Laya sidecar — and
+// The "jev", "laya", and "clef" strategies all classify each request with a
+// /v1/systemone engine — TypeSafe Jev, the self-hosted Laya sidecar, or the
+// Acme CLEF decision model (Cloudflare/clef behind the acme-proxy) — and
 // share orderModelsByJev plus the per-combo jevRubrics/jevMode/jevLowConfidence
-// settings. Only the endpoint, the auth key, and the recorded source name differ.
-const CLASSIFIER_STRATEGIES = new Set(["jev", "laya"]);
+// settings. Only the endpoint, the auth key, and the recorded source name
+// differ. Laya and CLEF are self-hosted endpoints that authenticate
+// upstream themselves (the sidecar / the acme-proxy injects credentials), so
+// neither needs a 9router key — a dummy value just satisfies the fail-open
+// guard in orderModelsByJev without implying a real credential.
+const CLASSIFIER_STRATEGIES = new Set(["jev", "laya", "clef"]);
 function classifierCfg(strategy, settings, comboStrategies, modelStr) {
   const isLaya = strategy === "laya";
+  const isClef = strategy === "clef";
   return {
-    // Laya needs no key (the sidecar ignores Authorization unless LAYA_API_KEY
-    // is set on it), but orderModelsByJev fail-opens on an empty key — a dummy
-    // value passes that guard without implying a real credential.
-    apiKey: isLaya ? "laya-local" : settings.jevApiKey,
-    url: isLaya ? settings.layaUrl : settings.jevUrl,
+    apiKey: isLaya ? "laya-local" : isClef ? "clef-local" : settings.jevApiKey,
+    url: isLaya ? settings.layaUrl : isClef ? settings.clefUrl : settings.jevUrl,
     timeoutMs: settings.jevTimeoutMs,
     confidenceGate: settings.jevConfidenceGate,
+    // CLEF sends its own decision-model selector in the body (the proxy
+    // validates it as a short id); Jev/Laya send the default engine id.
+    model: isClef ? settings.clefModel : undefined,
     mode: comboStrategies[modelStr]?.jevMode,
     lowConfidence: comboStrategies[modelStr]?.jevLowConfidence,
-    source: isLaya ? "laya" : "jev",
+    source: isLaya ? "laya" : isClef ? "clef" : "jev",
   };
 }
 

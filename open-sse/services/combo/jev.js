@@ -70,6 +70,50 @@ export function extractTurn(body) {
   return { userText: userText.slice(0, JEV_DEFAULTS.maxUserChars), continuation };
 }
 
+/**
+ * Parse the classifier response body tolerantly. Every known engine
+ * (TypeSafe Jev, Laya) returns a bare JSON document, but the Acme CLEF
+ * decision endpoint — reached through the acme-proxy — returns the decision
+ * JSON followed by a trailing stream terminator
+ * (`data: {…}data: [DONE]`). A whole-body JSON.parse throws on that tail,
+ * which would fail-open every CLEF request even though the decision is right
+ * there. We try a full parse first (the common case, byte-identical behavior)
+ * and only fall back to extracting the leading top-level object when that
+ * fails, so a well-formed body is never affected.
+ *
+ * @param {string} text
+ * @returns {object|null} the parsed decision, or null if no object is found
+ */
+export function parseDecisionBody(text) {
+  if (typeof text !== "string" || !text.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Fall through to the leading-object scan for the SSE-tailed shape.
+  }
+  const start = text.indexOf("{");
+  if (start === -1) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        try { return JSON.parse(text.slice(start, i + 1)); } catch { return null; }
+      }
+    }
+  }
+  return null;
+}
+
 function autoRubric(modelStr) {
   const slash = modelStr.indexOf("/");
   const provider = slash > 0 ? modelStr.slice(0, slash) : "";
@@ -192,7 +236,8 @@ export async function orderModelsByJev({ body, models, rubrics = {}, cfg = {}, l
       emit({ source, reason: `http-${res.status}`, picked: models[0], confidence: null, scores: {}, preview, classifierMs: Date.now() - t0 });
       return null;
     }
-    answer = (await res.json())?.answers?.route;
+    const body = parseDecisionBody(await res.text());
+    answer = body?.answers?.route;
   } catch (err) {
     log?.warn?.("JEV", `Classifier failed (${err?.name === "TimeoutError" ? "timeout" : err?.message || "error"}), keeping combo order`);
     emit({ source, reason: err?.name === "TimeoutError" ? "timeout" : "error", picked: models[0], confidence: null, scores: {}, preview, classifierMs: Date.now() - t0 });
