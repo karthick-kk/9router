@@ -406,3 +406,66 @@ describe("parseDecisionBody (tolerant response parsing)", () => {
     expect(onDecision.mock.calls[0][0]).toMatchObject({ source: "clef", strategy: "clef", reason: "classified", confidence: 0.82 });
   });
 });
+
+describe("hard-capability scoping (vision-aware candidates)", () => {
+  // Real cap table: the qwen3.8 ids resolve vision=true (pattern *qwen3.8*),
+  // glm / fast / smart resolve vision=no.
+  const VISION = ["oc/qwen3.8-vision-a", "oc/qwen3.8-vision-b"];
+  const TEXT = ["oc/glm-text-a", "oc/fast-model", "oc/smart-model"];
+  const MODELS = [...VISION, ...TEXT];
+  const CFG = { apiKey: "test-key", confidenceGate: 0.5 };
+
+  let fetchMock;
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  const imageBody = {
+    messages: [{ role: "user", content: [
+      { type: "text", text: "what color is this?" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } },
+    ] }],
+  };
+  const vision = new Set(["vision"]);
+
+  it("scores only vision-capable models when the turn carries an image", async () => {
+    fetchMock.mockImplementation(async () =>
+      jevResponse(VISION[0]));
+    const ordered = await orderModelsByJev({ body: imageBody, models: MODELS, cfg: CFG, requiredCapabilities: vision });
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body);
+    // Text-only models are NOT sent to the classifier as candidates.
+    expect(Object.keys(sent.questions.route.criteria).sort()).toEqual([...VISION].sort());
+    // Serve order = scored candidates (pick first) + demoted text models behind.
+    expect(ordered).toEqual([VISION[0], VISION[1], ...TEXT]);
+  });
+
+  it("text-only turn (no required caps) scores the full list unchanged", async () => {
+    fetchMock.mockImplementation(async () => jevResponse("oc/smart-model"));
+    const ordered = await orderModelsByJev({ body: { messages: [{ role: "user", content: "hi" }] }, models: MODELS, cfg: CFG });
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(Object.keys(sent.questions.route.criteria).sort()).toEqual([...MODELS].sort());
+    expect(ordered).toEqual(["oc/smart-model", ...MODELS.filter((m) => m !== "oc/smart-model")]);
+  });
+
+  it("no vision model qualifies → fail-open, full list scored, adapter covers the gap", async () => {
+    fetchMock.mockImplementation(async () => jevResponse("oc/smart-model"));
+    const ordered = await orderModelsByJev({ body: imageBody, models: ["oc/glm-text-a", "oc/smart-model"], cfg: CFG, requiredCapabilities: vision });
+    const sent = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(Object.keys(sent.questions.route.criteria).sort()).toEqual(["oc/glm-text-a", "oc/smart-model"]);
+    expect(ordered).toEqual(["oc/smart-model", "oc/glm-text-a"]);
+  });
+
+  it("health veto on a vision pick still demotes sick ones; text models stay at the back", async () => {
+    resetAdaptiveState();
+    // Mark the top pick sick: 0 successes / 10 failures.
+    for (let i = 0; i < 10; i++) recordAttempt(VISION[0], false, { latencyMs: 100 });
+    recordAttempt(VISION[1], true, { latencyMs: 100 });
+    fetchMock.mockImplementation(async () => jevResponse(VISION[0]));
+    const ordered = await orderModelsByJev({ body: imageBody, models: MODELS, cfg: CFG, requiredCapabilities: vision });
+    expect(ordered[0]).toBe(VISION[1]); // vetoed pick replaced
+    expect(ordered).toEqual([VISION[1], VISION[0], ...TEXT]);
+    resetAdaptiveState();
+  });
+});

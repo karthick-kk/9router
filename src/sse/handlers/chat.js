@@ -224,6 +224,7 @@ export async function handleChat(request, clientRawRequest = null) {
         comboName: modelStr,
         sessionId: sid,
         turn: st ? st.turnCounter : 1,
+        requiredCapabilities,
         onDecision: (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
       })) || comboModels;
     }
