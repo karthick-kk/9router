@@ -60,6 +60,7 @@ const STRATEGY_OPTIONS = [
   { value: "composite-stage", label: "Composite — Capable First" },
   { value: "jev", label: "Jev — classify per request" },
   { value: "laya", label: "Laya — local classifier" },
+  { value: "clef", label: "Clef — local decision model" },
 ];
 
 function getPolicyBadgeLabel(strategy = {}) {
@@ -462,6 +463,7 @@ const handleBulkSetStrategy = async (strategy) => {
             <li><span className="font-medium text-text-main">Composite — Capable First</span> — starts each task on the capable or efficient model based on a cheap classifier, then follows the agent&apos;s progress: trouble and exploration hold the capable model, routine editing hands off to the efficient one. One model per turn, so it costs no more than a single call</li>
             <li><span className="font-medium text-text-main">Jev</span> — TypeSafe Jev reads each request and picks the best-fitting model from the combo (~0.5s, fail-open: any classifier failure falls back to normal order)</li>
             <li><span className="font-medium text-text-main">Laya</span> — the self-hosted Laya sidecar classifies each request locally over the same /v1/systemone protocol (no API key, runs on the local machine; if the sidecar is down it fails open to normal order)</li>
+            <li><span className="font-medium text-text-main">Clef</span> — Cloudflare&apos;s CLEF decision model (Cloudflare/clef) reads each request and picks the best-fitting model, reached through the local Acme proxy over the same /v1/systemone protocol (no API key; ~1.5s, fail-open like Jev/Laya)</li>
           </ul>
           <p className="hidden text-xs text-text-muted mt-3 max-w-2xl">
             <span className="font-medium text-text-main">Cursor / Claude Default</span> create combos named exactly like those clients&apos; model IDs (e.g. <code className="font-mono">composer-2.5</code>, <code className="font-mono">opus</code>), seeded with the matching <code className="font-mono">cu/…</code> or <code className="font-mono">cc/…</code> route so traffic can hit 9router without the prefix.
@@ -812,10 +814,12 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
   const comboCaps = aggregateComboCapabilities(combo.models, comboByName, getCaps);
   const isComposite = current === "composite-stage";
   const isAdaptive = current === "adaptive";
-  // "jev" and "laya" share the same sub-panel (rubrics, priority, low-confidence
-  // handling) — both are /v1/systemone classifiers with identical per-combo settings.
+  // "jev", "laya", and "clef" share the same sub-panel (rubrics, priority,
+  // low-confidence handling) — all are /v1/systemone classifiers with identical
+  // per-combo settings. Laya and Clef are self-hosted (no 9router key needed).
   const isLaya = current === "laya";
-  const isJev = current === "jev" || isLaya;
+  const isClef = current === "clef";
+  const isJev = current === "jev" || isLaya || isClef;
   const jevRubrics = strategy.jevRubrics || {};
   const jevMode = strategy.jevMode || "efficient";
   const jevLowConfidence = strategy.jevLowConfidence || "hold";
@@ -1046,9 +1050,9 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
       )}
 
       {isJev && (
-        // Laya is self-hosted and needs no key — skip the TypeSafe key prompt
-        // for it and go straight to the shared classifier panel.
-        (!jevConfigured && !isLaya) ? (
+        // Laya and Clef are self-hosted and need no key — skip the TypeSafe key
+        // prompt for them and go straight to the shared classifier panel.
+        (!jevConfigured && !isLaya && !isClef) ? (
           <div className="px-3 pb-2 space-y-1">
             <p className="text-[10px] text-text-muted pt-1.5">TypeSafe API key required — until set, Jev falls back to normal combo order. (env TYPESAFE_API_KEY also works)</p>
             <JevKeyInput onSaved={onJevKeySaved} />
@@ -1056,7 +1060,7 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
         ) : combo.models.length > 1 && (
         <div className="px-3 pb-2 border-t border-border-light space-y-1">
           <div className="flex items-center gap-2 pt-1.5">
-            <span className="text-[10px] text-text-muted shrink-0">{isLaya ? "Laya priority:" : "Jev priority:"}</span>
+            <span className="text-[10px] text-text-muted shrink-0">{isLaya ? "Laya priority:" : isClef ? "Clef priority:" : "Jev priority:"}</span>
             <select
               value={jevMode}
               onChange={(e) => onSetStrategy({ jevMode: e.target.value })}
@@ -1073,10 +1077,10 @@ function ComboCard({ combo, getCaps, comboByName = {}, activeProviders = [], cop
               className="px-1.5 py-0.5 text-[10px] bg-input border border-border rounded-md outline-none focus:border-primary cursor-pointer"
             >
               <option value="hold">Hold — keep combo order</option>
-              <option value="rank">{isLaya ? "Follow Laya ranking" : "Follow Jev ranking"}</option>
+              <option value="rank">{isLaya ? "Follow Laya ranking" : isClef ? "Follow Clef ranking" : "Follow Jev ranking"}</option>
             </select>
           </div>
-          <p className="text-[10px] text-text-muted">Optional one-line notes {isLaya ? "Laya" : "Jev"} sees when choosing (blank = auto from model capabilities):</p>
+          <p className="text-[10px] text-text-muted">Optional one-line notes {isLaya ? "Laya" : isClef ? "Clef" : "Jev"} sees when choosing (blank = auto from model capabilities):</p>
           {combo.models.map((m) => (
             <div key={m} className="flex items-center gap-1.5">
               <span title={m} className="text-[10px] text-text-muted font-mono truncate w-40 shrink-0">{m}</span>
