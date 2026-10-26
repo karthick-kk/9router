@@ -489,18 +489,6 @@ export async function handleComboChat({
     rotatedModels = getRotatedModels(models, comboName, comboStrategy, comboStickyLimit);
   }
 
-  // Adaptive strategy: reorder by live health (uptime + latency) from the
-  // in-process adaptive scorer. Runs after rotation so a sticky round-robin
-  // window still applies, then health reorders within it.
-  const adaptiveEnabled = comboStrategy === "adaptive";
-  if (adaptiveEnabled) {
-    const adaptiveOrder = orderAdaptiveModels(rotatedModels, { preset: adaptivePreset });
-    if (adaptiveOrder[0] !== rotatedModels[0]) {
-      log.info("COMBO", `adaptive reorder: ${rotatedModels[0]} → ${adaptiveOrder[0]} (preset: ${typeof adaptivePreset === "string" ? adaptivePreset : "custom"})`);
-    }
-    rotatedModels = adaptiveOrder;
-  }
-
   // Auto-switch: float models that satisfy the request's required capabilities to the front.
   if (autoSwitch) {
     const required = detectRequiredCapabilities(body);
@@ -597,7 +585,7 @@ export async function handleComboChat({
                   if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
                     clearStickyComboSession(comboName, sessionId);
                   }
-                  if (adaptiveEnabled) recordAttempt(modelStr, false, { latencyMs: Date.now() - attemptStart });
+                  recordAttempt(modelStr, false, { latencyMs: Date.now() - attemptStart });
                   lastError = "Zero usable content";
                   lastStatus = 200;
                   continue;
@@ -608,14 +596,14 @@ export async function handleComboChat({
             }
           }
 
-          if (adaptiveEnabled) recordAttempt(modelStr, true, { latencyMs: Date.now() - attemptStart });
+          recordAttempt(modelStr, true, { latencyMs: Date.now() - attemptStart });
           log.info("COMBO", `Model ${modelStr} succeeded`);
           safeEmit(onServed, { served: modelStr, success: true, fellOver: i > 0, fellOverTo: null, status: result.status ?? 200, latencyMs: Date.now() - loopStart });
           return result;
         }
 
         if (peeked.outcome === "content") {
-          if (adaptiveEnabled) recordAttempt(modelStr, true, { latencyMs: Date.now() - attemptStart });
+          recordAttempt(modelStr, true, { latencyMs: Date.now() - attemptStart });
           log.info("COMBO", `Model ${modelStr} succeeded${peeked.timedOut ? " (peek deadline; committed)" : ""}`);
           safeEmit(onServed, { served: modelStr, success: true, fellOver: i > 0, fellOverTo: null, status: result.status ?? 200, latencyMs: Date.now() - loopStart });
           return peeked.response;
@@ -627,7 +615,7 @@ export async function handleComboChat({
         const reasonLabel = peeked.finishReason || "no-content";
         const isLast = i === rotatedModels.length - 1;
         if (isNoRetryFinish(peeked.finishReason) || isLast) {
-          if (adaptiveEnabled) recordAttempt(modelStr, false);
+          recordAttempt(modelStr, false);
           log.warn("COMBO", `Model ${modelStr} returned empty (${reasonLabel}) — ${isNoRetryFinish(peeked.finishReason) ? "no-retry class" : "last candidate"}, returning as-is`);
           safeEmit(onServed, { served: modelStr, success: false, fellOver: i > 0, fellOverTo: null, status: result.status ?? 200, latencyMs: Date.now() - loopStart });
           return peeked.response;
@@ -637,7 +625,7 @@ export async function handleComboChat({
         if (comboStrategy === "smart" && sessionId && modelStr === activeStickyModel) {
           clearStickyComboSession(comboName, sessionId);
         }
-        if (adaptiveEnabled) recordAttempt(modelStr, false);
+        recordAttempt(modelStr, false);
         // Drain/close the discarded stream in the background so its usage logging still runs.
         peeked.response.body?.cancel?.().catch(() => {});
         lastError = `empty generation (${reasonLabel})`;
@@ -676,7 +664,7 @@ export async function handleComboChat({
       const { shouldFallback, cooldownMs, requestScoped } = checkFallbackError(result.status, errorText, 0, provider);
 
       if (!shouldFallback && !requestScoped) {
-        if (adaptiveEnabled) recordAttempt(modelStr, false, { rateLimited: isRateLimit(result.status, errorText) });
+        recordAttempt(modelStr, false, { rateLimited: isRateLimit(result.status, errorText) });
         log.warn("COMBO", `Model ${modelStr} failed (no fallback)`, { status: result.status });
         safeEmit(onServed, { served: modelStr, success: false, fellOver: i > 0, fellOverTo: null, status: result.status, latencyMs: Date.now() - loopStart });
         return result;
@@ -690,6 +678,11 @@ export async function handleComboChat({
       // checkFallbackError() reports no account fallback here on purpose (a
       // request-scoped fault must not evict a healthy account from rotation).
       if (requestScoped) {
+        // A request-scoped 4xx is not an account-credential fault, so it does
+        // not evict the account — but the attempt still failed from the model's
+        // perspective, so feed the shared health cache: every strategy reads it
+        // and a model that rejects requests it cannot serve is a weaker pick.
+        recordAttempt(modelStr, false, { rateLimited: isRateLimit(result.status, errorText) });
         log.warn("COMBO", `Model ${modelStr} rejected the request (${result.status}), trying next`, { status: result.status });
         lastError = errorText || String(result.status);
         if (!lastStatus) lastStatus = result.status;
