@@ -242,9 +242,9 @@ const KIRO_AUTO_CAPABILITIES = { vision: true, search: true, contextWindow: 1000
 // carries Anthropic's direct-API ceilings (128K output on the output-128k beta),
 // but the gateway caps several models lower, so the honest per-provider numbers
 // live here. Values below are the gateway's own maxInputTokens/maxOutputTokens.
-const KIRO_SONNET_5_CAPS   = { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 64000 };
-const KIRO_OPUS_46_CAPS    = { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 64000 };
-const KIRO_SONNET_46_CAPS  = { vision: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 64000 };
+const KIRO_SONNET_5_CAPS   = { vision: true, pdf: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 };
+const KIRO_OPUS_46_CAPS    = { vision: true, pdf: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 };
+const KIRO_SONNET_46_CAPS  = { vision: true, pdf: true, reasoning: true, search: true, thinkingFormat: "claude-adaptive", contextWindow: 1000000, maxOutput: 128000 };
 const KIRO_MINIMAX_25_CAPS = { contextWindow: 196000, maxOutput: 64000 };
 const KIRO_MINIMAX_21_CAPS = { vision: true, contextWindow: 196000, maxOutput: 64000 };
 const KIRO_QWEN3_CAPS      = { vision: true, contextWindow: 256000, maxOutput: 64000 };
@@ -689,7 +689,12 @@ export const PATTERN_CAPABILITIES = [
   // v4.1+ has real image input (probed live on Alibaba MaaS: correct color
   // read from a PNG). v4-pro / v4-flash-0731 accept image blocks but ignore
   // them (answered "Unknown"), so vision stays scoped to v4.* dotted releases.
-  { pattern: "*deepseek-v4.*",  caps: { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingEffortSupported: true, thinkingEffortInChatTemplateKwargs: true, contextWindow: 1000000, maxOutput: 128000 } },
+  // thinkingEffortInChatTemplateKwargs is NOT set on this pattern: only the
+  // exact Ray-LLM V4.1 entries (deepseek-v4.1-flash / -v4-1-flash above) 400 on
+  // a top-level "max". Other v4.* engines (e.g. the OpenCode Zen free lane
+  // deepseek-v4.1-flash-free) forward "max" verbatim at the top level, so the
+  // broad pattern must not force the value into chat_template_kwargs.
+  { pattern: "*deepseek-v4.*",  caps: { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingEffortSupported: true, contextWindow: 1000000, maxOutput: 128000 } },
   { pattern: "*deepseek-v4*",   caps: { reasoning: true, thinkingFormat: "deepseek", thinkingEffortSupported: true, contextWindow: 1000000, maxOutput: 384000 } },
   { pattern: "*reasoner*",      caps: { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 128000 } },
   { pattern: "*deepseek-r*",    caps: { reasoning: true, thinkingFormat: "deepseek", thinkingCanDisable: false, contextWindow: 128000 } },
