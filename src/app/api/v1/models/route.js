@@ -10,7 +10,13 @@ import {
 import { getProviderConnections, getCombos, getCustomModels, getModelAliases } from "@/lib/localDb";
 import { getDisabledModels } from "@/lib/disabledModelsDb";
 import { getKeyAccessContext, filterModelsListForKey } from "@/sse/services/keyAccess.js";
-import { resolveKiroModels } from "open-sse/services/kiroModels.js";
+import { resolveKiroModels, buildVariants } from "open-sse/services/kiroModels.js";
+import {
+  resolveKiroCliProfileArn,
+  fetchKiroCliCatalog,
+  normalizeKiroCliModel,
+} from "open-sse/services/kiroCliModels.js";
+import { resolveKiroEffortPath } from "open-sse/config/kiroConstants.js";
 import { resolveKimchiModels } from "open-sse/services/kimchiModels.js";
 import { resolveQoderModels, routableQoderModels } from "open-sse/services/qoderModels.js";
 import { resolveCopilotModels } from "open-sse/services/copilotModels.js";
@@ -64,7 +70,59 @@ function comboSeatCapabilities(seat) {
 // Per-provider live model resolvers. Each receives a connection record and
 // returns { models: [{ id, name? }, ...] } | null on failure.
 // Adding a provider here makes /v1/models prefer the live catalog for it.
+const KIRO_CLI_CATALOG_TTL_MS = 5 * 60 * 1000; // 5 minutes per connection
+const kiroCliCatalogCache = new Map();
+
+async function resolveKiroCliLiveModels(conn) {
+  const psd = conn.providerSpecificData || {};
+  const cacheKey = conn.id || `${conn.provider}:${conn.accessToken || ""}`;
+  const cached = kiroCliCatalogCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.models;
+
+  const profileArn = await resolveKiroCliProfileArn(conn.accessToken, psd.region, { log: console });
+  if (!profileArn) return null;
+
+  const raw = await fetchKiroCliCatalog(conn.accessToken, profileArn, psd.region, { log: console });
+  // Expand each upstream gateway model into the synthetic variant set
+  // (`-thinking`, `-agentic`, `-thinking-agentic`), mirroring legacy kiro and
+  // the dashboard connection-models resolver. The gateway REJECTS
+  // `additionalModelRequestFields` thinking for models below the reasoning
+  // boundary (resolveKiroEffortPath === null, e.g. 4.5), so drop `-thinking`
+  // variants for those rather than offer a 400. The gateway's real
+  // `tokenLimits.maxInputTokens` travels as `capabilities.contextWindow` so a
+  // model with no static-pattern match (e.g. a future release) still publishes
+  // the live ceiling instead of falling back to the 200k floor.
+  const thinkingSupported = (modelId) => resolveKiroEffortPath(modelId) !== null;
+  const models = raw
+    .map(normalizeKiroCliModel)
+    .filter((m) => m.id)
+    .flatMap((m) =>
+      buildVariants(m.id, m.name)
+        .filter((v) => v.capabilities.thinking ? thinkingSupported(m.id) : true)
+        .map((v) => ({
+          id: v.id,
+          name: v.name,
+          capabilities: v.capabilities.thinking
+            ? { reasoning: true, ...(m.contextWindow ? { contextWindow: m.contextWindow } : {}) }
+            : (m.contextWindow ? { contextWindow: m.contextWindow } : undefined),
+        }))
+    );
+
+  if (!models.length) return null;
+  const result = { models };
+  kiroCliCatalogCache.set(cacheKey, { models: result, expiresAt: Date.now() + KIRO_CLI_CATALOG_TTL_MS });
+  return result;
+}
+
 const LIVE_MODEL_RESOLVERS = {
+  "kiro-cli": async (conn) => {
+    try {
+      return await resolveKiroCliLiveModels(conn);
+    } catch (err) {
+      console.log(`Kiro CLI live model fetch failed: ${err?.message || err}`);
+      return null;
+    }
+  },
   kiro: async (conn) => {
     const result = await resolveKiroModels({
       accessToken: conn.accessToken,
