@@ -484,12 +484,14 @@ export default function ProviderDetailPage() {
     fetchDisabledModels();
   }, [fetchConnections, fetchAliases, fetchCustomModels, fetchDisabledModels]);
 
-  // Live per-connection catalogs (cursor, zed): the static registry carries
-  // no usable list, so resolve from the active connection. Fires only when
-  // the provider id or connection list changes — no polling, no loop.
-  // Cursor path is statement-identical to before; zed adds error surfacing.
+  // Live per-connection catalogs (cursor, zed, kiro-cli): the static registry
+  // carries no usable list (or goes stale as upstream adds models), so resolve
+  // from the active connection. Fires only when the provider id or connection
+  // list changes — no polling, no loop.
+  // Cursor path is statement-identical to before; zed adds error surfacing;
+  // kiro-cli mirrors cursor (no error UI) but needs the live catalog for 5.5+.
   useEffect(() => {
-    const isLiveCatalog = providerId === "cursor" || providerId === "zed";
+    const isLiveCatalog = providerId === "cursor" || providerId === "zed" || providerId === "kiro-cli";
     if (!isLiveCatalog) {
       setLiveModels([]);
       return;
