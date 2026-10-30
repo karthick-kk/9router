@@ -361,16 +361,30 @@ export class KiroExecutor extends BaseExecutor {
    */
   async execute(args) {
     const result = await super.execute(args);
-    if (result?.response?.ok) {
-      // KIRO_INTEGRITY_GATE=off streams through, forfeiting the tool-call repair retry.
-      if (process.env.KIRO_INTEGRITY_GATE === "off") {
-        result.response = this.transformEventStreamToSSE(result.response, args.model, {
-          toolSpecs: args.body?.conversationState?.currentMessage?.userInputMessage?.userInputMessageContext?.tools || []
-        });
-      } else {
-        this.attachIntegrityGate(result, args);
-      }
+    if (!result?.response?.ok) return result;
+    // Two ways to opt out of the buffering integrity gate and stream the
+    // upstream EventStream to the client as it arrives:
+    //   1. KIRO_INTEGRITY_GATE=off — a global env kill switch that streams
+    //      every kiro response through live.
+    //   2. providerSpecificData.kiroStreamLive === true — a per-connection
+    //      opt-in for a specific connection.
+    // The gate buffers the entire stream so it can detect + auto-retry
+    // truncated/corrupt turns (ellipsis-only, short-final, invalid tool calls),
+    // which by definition conflicts with live delivery of reasoning deltas —
+    // a -thinking model's thought process would arrive in one burst at the end
+    // instead of streaming. transformEventStreamToSSE already validates frames,
+    // maps stop reasons, and appends finish_reason/[DONE], so the live path
+    // only gives up the truncation RETRY, not correctness.
+    const live = process.env.KIRO_INTEGRITY_GATE === "off" ||
+      args.credentials?.providerSpecificData?.kiroStreamLive === true;
+    if (live) {
+      result.response = this.transformEventStreamToSSE(result.response, args.model, {
+        maxToolBytes: Math.max(1, Math.floor(KIRO_REPAIR_BUFFER_MAX_BYTES / 2)),
+        signal: args.signal,
+      });
+      return result;
     }
+    this.attachIntegrityGate(result, args);
     return result;
   }
 
@@ -1154,6 +1168,15 @@ export class KiroExecutor extends BaseExecutor {
     }
 
     const reader = response.body.getReader();
+    // When the transform is the final stage (live mode, no integrity gate), the
+    // caller's abort signal is passed through so a cancelled client tears down
+    // the upstream read. Under the gate the wrapper owns cancellation instead,
+    // so options.signal is simply absent and this is a no-op.
+    const abortSignal = options.signal;
+    const abortError = () => new Error("Kiro EventStream read aborted");
+    const onAbort = () => { reader.cancel(abortError().message).catch(() => {}); };
+    if (abortSignal?.aborted) onAbort();
+    else abortSignal?.addEventListener("abort", onAbort, { once: true });
     const stream = new ReadableStream({
       start: async (controller) => {
         try {
@@ -1170,6 +1193,7 @@ export class KiroExecutor extends BaseExecutor {
               controller.enqueue(encoder.encode(": kiro-upstream\n\n"));
             }
           }
+          if (abortSignal?.aborted) { state.finished = true; abortSignal?.removeEventListener?.("abort", onAbort); controller.close(); return; }
           finish(controller);
           controller.close();
         } catch (error) {
