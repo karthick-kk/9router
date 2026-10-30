@@ -163,7 +163,10 @@ export default function ProviderDetailPage() {
   const supportsApiKeyAuth = !!APIKEY_PROVIDERS[providerId] || authModes.includes("apikey");
   const isFreeNoAuth = !!FREE_PROVIDERS[providerId]?.noAuth;
   const staticModels = getModelsByProviderId(providerId);
-  const models = (providerId === "cursor" || providerId === "zed") && liveModels.length > 0
+  // cursor/zed/kiro-cli serve their models from a live per-connection catalog;
+  // for those, the fetched live list wins over the static registry fallback
+  // (which goes stale as upstream adds/removes models — e.g. kiro-cli's 5.5 gen).
+  const models = (providerId === "cursor" || providerId === "zed" || providerId === "kiro-cli") && liveModels.length > 0
     ? liveModels
     : staticModels;
   const providerAlias = getProviderAlias(providerId);
