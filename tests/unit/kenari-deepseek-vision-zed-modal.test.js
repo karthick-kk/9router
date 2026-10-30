@@ -12,6 +12,11 @@
  *   The hardcoded list ["cursor","cline","clinepass"] omitted "zed", so the
  *   Zed provider card was never fetched and never shown in the Combo picker.
  *   Fix: add "zed" to the list (and wire up the corresponding state/hook/ternary).
+ *
+ * kiro-cli — same gap: the Combo picker's LIVE_CATALOG_PROVIDERS omitted
+ *   "kiro-cli", so the static (stale) registry won and the live 5.5 gateway
+ *   models never appeared in "Add Model to Combo". Fix: add "kiro-cli" to
+ *   the list and wire up kiroCliModels like zedModels.
  */
 
 import { describe, it, expect, beforeAll } from "vitest";
@@ -76,5 +81,32 @@ describe("ModelSelectModal LIVE_CATALOG_PROVIDERS includes zed (#4244)", () => {
   it("zedModels hook call is present in the file", () => {
     expect(src).toContain("zedModels");
     expect(src).toContain("zedConnectionIds");
+  });
+});
+
+// ── kiro-cli live catalog in the Combo picker ────────────────────────────
+// kiro-cli's backend customResolver resolves the live Kiro gateway catalog
+// (per-account entitlements), so the stale static registry must not win.
+// Same source-text pattern as the zed test above (JSX cannot be imported).
+describe("ModelSelectModal LIVE_CATALOG_PROVIDERS includes kiro-cli", () => {
+  let src;
+  beforeAll(() => {
+    const fileUrl = new URL("../../src/shared/components/ModelSelectModal.js", import.meta.url);
+    src = fs.readFileSync(fileUrl, "utf-8");
+  });
+
+  it("includes kiro-cli in LIVE_CATALOG_PROVIDERS", () => {
+    const match = src.match(/const LIVE_CATALOG_PROVIDERS\s*=\s*\[([^\]]+)\]/);
+    expect(match).toBeTruthy();
+    expect(match[1]).toContain('"kiro-cli"');
+  });
+
+  it("kiroCliModels hook call is present in the file", () => {
+    expect(src).toContain("kiroCliModels");
+    expect(src).toContain("kiroCliConnectionIds");
+  });
+
+  it("liveModels ternary routes kiro-cli to kiroCliModels", () => {
+    expect(src).toContain('providerId === "kiro-cli" ? kiroCliModels');
   });
 });
