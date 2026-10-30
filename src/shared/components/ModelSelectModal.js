@@ -26,7 +26,9 @@ const PROVIDER_ORDER = [
 // Static registry stays as fallback when live fetch fails or is empty.
 // zed added in #4244: its backend customResolver already returns live models
 // but the frontend omitted it, hiding Zed entirely from the Combo picker.
-const LIVE_CATALOG_PROVIDERS = ["cursor", "cline", "clinepass", "zed"];
+// kiro-cli: the backend customResolver resolves the live Kiro gateway catalog
+// (per-account entitlements differ); the static registry is a stale fallback.
+const LIVE_CATALOG_PROVIDERS = ["cursor", "cline", "clinepass", "zed", "kiro-cli"];
 
 // Fetch a provider's account-scoped catalog for every active connection and merge
 // the results. Entries collapse by model id on purpose: two connections of the
@@ -151,11 +153,13 @@ export default function ModelSelectModal({
   const clineConnectionIds = liveConnectionIdsByProvider.cline;
   const clinepassConnectionIds = liveConnectionIdsByProvider.clinepass;
   const zedConnectionIds = liveConnectionIdsByProvider.zed;
+  const kiroCliConnectionIds = liveConnectionIdsByProvider["kiro-cli"];
 
   const cursorModels = useLiveProviderModels(isOpen, cursorConnectionIds, "Cursor");
   const clineModels = useLiveProviderModels(isOpen, clineConnectionIds, "Cline");
   const clinepassModels = useLiveProviderModels(isOpen, clinepassConnectionIds, "ClinePass");
   const zedModels = useLiveProviderModels(isOpen, zedConnectionIds, "Zed");
+  const kiroCliModels = useLiveProviderModels(isOpen, kiroCliConnectionIds, "Kiro CLI");
 
   const fetchCombos = async () => {
     try {
@@ -406,7 +410,7 @@ export default function ModelSelectModal({
           hasModels: mergedModels.length > 0,
         };
       } else {
-        const liveModels = providerId === "cursor" ? cursorModels : providerId === "cline" ? clineModels : providerId === "clinepass" ? clinepassModels : providerId === "zed" ? zedModels : [];
+        const liveModels = providerId === "cursor" ? cursorModels : providerId === "cline" ? clineModels : providerId === "clinepass" ? clinepassModels : providerId === "zed" ? zedModels : providerId === "kiro-cli" ? kiroCliModels : [];
         const hardcodedModels = liveModels.length > 0
           ? liveModels
           : getModelsByProviderId(providerId);
@@ -500,7 +504,7 @@ export default function ModelSelectModal({
     });
 
     return groups;
-  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels]);
+  }, [filteredActiveProviders, modelAliases, allProviders, providerNodes, customModels, disabledModels, kindFilter, effectiveConnections, deactivatedProviderIds, cursorModels, clineModels, clinepassModels, zedModels, kiroCliModels]);
 
   // Parse search query into structured query (regex, positive tokens, negative tokens)
   const parsedQuery = useMemo(() => parseSearchQuery(searchQuery), [searchQuery]);
