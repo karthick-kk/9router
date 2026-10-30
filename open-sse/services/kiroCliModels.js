@@ -237,11 +237,36 @@ export async function fetchKiroCliCatalog(accessToken, profileArn, ssoRegion, op
   return models;
 }
 
+function capitalizeFirst(s) {
+  return s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+}
+
+/**
+ * Turn a raw gateway model id into the friendly display name the dashboard and
+ * the Combo picker show. The Kiro gateway's `List-Available-Models` echoes the
+ * model id back as `modelName` (e.g. `claude-opus-5.5`), so without this the
+ * live catalog would render raw ids where the static registry showed
+ * `Claude Opus 5.5`. We honor a genuine gateway display name only when it
+ * differs from the id and already looks human (has a space); otherwise we
+ * derive one from the id pattern so new models stay friendly without edits.
+ */
+export function prettyKiroCliModelName(modelId, gatewayName) {
+  if (gatewayName && gatewayName !== modelId && /\s/.test(gatewayName)) return gatewayName;
+  const id = modelId || "";
+  if (id === "auto") return "Auto";
+  const claude = id.match(/^claude-(opus|sonnet|haiku)-(.+)$/);
+  if (claude) return `Claude ${capitalizeFirst(claude[1])} ${claude[2]}`;
+  const minimax = id.match(/^minimax-m?([\d.]+)$/);
+  if (minimax) return `MiniMax M${minimax[1]}`;
+  if (id === "qwen3-coder-next") return "Qwen3 Coder Next";
+  return gatewayName || id;
+}
+
 /** Map a raw gateway model entry to the 9router model shape. */
 export function normalizeKiroCliModel(raw) {
   return {
     id: raw.modelId,
-    name: raw.modelName || raw.modelId,
+    name: prettyKiroCliModelName(raw.modelId, raw.modelName),
     rateMultiplier: raw.rateMultiplier,
     contextWindow: raw.tokenLimits?.maxInputTokens || undefined,
   };
