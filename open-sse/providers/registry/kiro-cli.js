@@ -47,7 +47,11 @@ export default {
     // legacy models (4.5 / 4 / haiku-4.5) with 400 REQUEST_BODY_INVALID, so
     // those expose base + agentic only. `auto` routes server-side and exposes
     // neither: the gateway catalog reports additionalModelRequestFieldsSchema
-    // null for it and it ignores thinking fields.
+    // null for it and it ignores thinking fields. Its reasoning can never be
+    // surfaced through 9router — the gateway only ever returns a redacted
+    // (encrypted) reasoning blob for `auto`, with no plaintext content to map
+    // to `reasoning_content`, so callers asking for visible thinking must pick
+    // an explicit Claude model instead.
     { id: "auto", name: "Auto" },
     // Claude
     { id: "claude-opus-5", name: "Claude Opus 5" },

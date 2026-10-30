@@ -254,6 +254,32 @@ function kiroModelLacksXhigh(model) {
   return !v || (v.major === 4 && v.minor !== null && v.minor <= 6);
 }
 
+/**
+ * Implicit effort floor when thinking is enabled without an explicit effort.
+ *
+ * `buildKiroAdditionalModelRequestFields` only reaches this floor when the body
+ * carries no effort string of its own, regardless of how thinking was turned on
+ * (a `-thinking` model id, the `interleaved-thinking` beta header, or a
+ * `<thinking_mode>` tag all resolve to the same default budget).
+ * budgetToEffort maps that budget to `medium`, but live-verified the 5.5-
+ * generation Claude models emit NO visible reasoning at `medium` (sonnet-5.5:
+ * medium=0 frames, high=50, max=384), so a thinking-enabled 5.5+ model would
+ * silently answer with no reasoning block. Those models (5.5 and later minors,
+ * and any 6.x+) need at least `high` to actually reason, so the budget-derived
+ * default is lifted to `high` for them. The `5` generation (minor null, e.g.
+ * sonnet-5/opus-5) and all 4.x keep the `medium` default.
+ *
+ * @param {string} model Upstream Kiro model id (suffixes already stripped).
+ * @returns {string|null} "high" for 5.5+, otherwise null.
+ */
+function kiroThinkingEffortFloor(model) {
+  const v = parseClaudeVersion(model);
+  if (!v) return null;
+  if (v.major > 5) return "high";
+  if (v.major === 5 && v.minor !== null && v.minor >= 5) return "high";
+  return null;
+}
+
 export function extractKiroEffortLevel(body, model) {
   const effort =
     body?.output_config?.effort ??
@@ -313,8 +339,11 @@ export function buildKiroAdditionalModelRequestFields(body, effortPath = "output
   // alone, with no effort field anywhere in the body. Fall back to that budget
   // so picking `<model>-thinking` enables native thinking on its own instead of
   // requiring the caller to also send reasoning_effort / thinking.budget_tokens.
-  const effort = extractKiroEffortLevel(body, model)
-    || (fallbackBudget > 0 ? budgetToEffort(fallbackBudget) : null);
+  const explicitEffort = extractKiroEffortLevel(body, model);
+  const effort = explicitEffort
+    || (fallbackBudget > 0
+      ? (kiroThinkingEffortFloor(model) || budgetToEffort(fallbackBudget))
+      : null);
   if (!effort) return undefined;
   // Mirrors Kiro CLI/KAS buildEffortRequestFields("output_config").
   return {
