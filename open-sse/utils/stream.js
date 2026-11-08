@@ -8,6 +8,7 @@ import { parseSSELine, hasValuableContent, fixInvalidId, formatSSE, ensureStream
 import { restoreToolNames } from "./opencodeFingerprint.js";
 import { getOpenAIResponsesEventName, isOpenAIResponsesTerminalEvent, formatIncompleteOpenAIResponsesStreamFailure } from "./responsesStreamHelpers.js";
 import { dbg, isDebugEnabled } from "./debugLog.js";
+import { isOpenAICompatibleProvider } from "@/shared/constants/providers.js";
 
 import { SSE_DONE, SSE_HEADERS, SSE_HEADERS_NO_BUFFER } from "./sseConstants.js";
 
@@ -103,7 +104,13 @@ export function createSSEStream(options = {}) {
   // (`reasoning` / `reasoning_details[]`) instead of reasoning_content — OpenCode
   // Free's MiMo route does. Lift it on every passthrough delta so OpenAI-shaped
   // clients, the thinking accumulation below and usage accounting see the text.
-  const liftAliases = mode === STREAM_MODE.PASSTHROUGH && !!PROVIDERS[provider]?.quirks?.reasoningAliasFields;
+  // Static providers opt in via quirks.reasoningAliasFields (opencode). Dynamic
+  // openai-compatible-<uuid> providers (e.g. a Ray-LLM cluster) are absent from
+  // the static PROVIDERS map, yet their openai-compat layer emits the `reasoning`
+  // alias for every model — so lift for them too, keyed on the provider prefix.
+  const liftAliases =
+    mode === STREAM_MODE.PASSTHROUGH &&
+    (!!PROVIDERS[provider]?.quirks?.reasoningAliasFields || isOpenAICompatibleProvider(provider));
 
   // Usage/logging tail, callable from transform() as well as flush(): a client that
   // closes right after the terminal event cancels the reader, and flush() never runs.

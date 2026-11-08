@@ -194,3 +194,67 @@ describe("OpenCode free reasoning aliases reach OpenAI-shaped clients", () => {
     expect(reasoningOnly.choices[0].message.reasoning_content).toBe("17*23 = 391");
   });
 });
+
+describe("dynamic openai-compatible providers surface alias reasoning", () => {
+  // Ray-LLM openai-compat clusters (e.g. the acme connection,
+  // openai-compatible-chat-<uuid>) stream thinking as `reasoning` for every
+  // model (V4.1-Flash, gpt-oss, GLM — probed live). Dynamic provider ids are
+  // never in the static PROVIDERS map, so liftAliases (stream.js) saw
+  // PROVIDERS[provider] === undefined and dropped the field for OpenAI-shaped
+  // clients even though liftReasoningAliases() itself handles `reasoning`.
+  const rayLLMDelta = {
+    id: "gen-1",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    choices: [{ index: 0, finish_reason: null, delta: { role: "assistant", content: "", reasoning: "thinking text" } }],
+  };
+  const rayAnswerDelta = {
+    id: "gen-1",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+    choices: [{ index: 0, finish_reason: null, delta: { role: "assistant", content: "answer" } }],
+  };
+
+  it("lifts reasoning into reasoning_content on the passthrough", async () => {
+    let settled = null;
+    const out = passthroughEvents(
+      await drain(sseStream([rayLLMDelta, rayAnswerDelta]).pipeThrough(
+        createPassthroughStreamWithLogger(
+          "openai-compatible-chat-59720956-fe82-4f8e-bfdf-6c6493c184f3",
+          null,
+          "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+          null,
+          null,
+          (content) => { settled = content; },
+          null,
+        ),
+      )),
+    );
+    const first = out[0].choices[0].delta;
+    expect(first.reasoning_content).toBe("thinking text");
+    expect(first.reasoning).toBe("thinking text");
+    expect(out.map((e) => e.choices[0].delta.content || "").join("")).toBe("answer");
+    expect(settled).toEqual({ content: "answer", thinking: "thinking text" });
+  });
+
+  it("leaves non-reasoning deltas from the same provider alone", async () => {
+    const out = passthroughEvents(
+      await drain(sseStream([rayAnswerDelta]).pipeThrough(
+        createPassthroughStreamWithLogger(
+          "openai-compatible-chat-59720956-fe82-4f8e-bfdf-6c6493c184f3",
+          null,
+          "deepseek-ai/DeepSeek-V4.1-Flash-1017",
+          null,
+          null,
+          null,
+          null,
+        ),
+      )),
+    );
+    const first = out[0].choices[0].delta;
+    expect(first.reasoning_content).toBeUndefined();
+    expect(first.content).toBe("answer");
+  });
+});
