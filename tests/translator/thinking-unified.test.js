@@ -205,6 +205,18 @@ describe("applyThinking per provider format", () => {
     });
     expect(out.chat_template_kwargs).toEqual({ enable_thinking: false, reasoning_effort: "max" });
   });
+  // Regression: Ray-LLM serves V4.1 under dated-build suffixes too
+  // (acme/deepseek-ai/DeepSeek-V4.1-Flash-1017). baseModel "DeepSeek-V4.1-Flash-1017"
+  // misses the exact "DeepSeek-V4.1-Flash" entry and falls to the *deepseek-v4.*
+  // pattern, which must NOT carry the ctk flag (the OpenCode Zen free lane
+  // deepseek-v4.1-flash-free matches it and forwards "max" verbatim). So the
+  // dated build needs its own exact entry — otherwise the effort rides top-level
+  // and the V4.1 engine 400s.
+  it("DeepSeek V4.1-Flash-1017 (dated build) max rides chat_template_kwargs", () => {
+    const out = apply("openai", "acme/deepseek-ai/DeepSeek-V4.1-Flash-1017", { reasoning_effort: "max" });
+    expect(out.chat_template_kwargs).toEqual({ reasoning_effort: "max" });
+    expect(out.reasoning_effort).toBeUndefined();
+  });
   // Regression: the ctk-nesting is V4.1-scoped. Older V4 engines (Pro/0731) stream
   // reasoning_content ONLY from a top-level effort, so they must keep top-level "max".
   it("DeepSeek Pro-0813 max stays TOP-LEVEL (ctk would silently drop thinking)", () => {

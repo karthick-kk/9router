@@ -199,6 +199,12 @@ export const MODEL_CAPABILITIES = {
   // the ctk flag (the OpenCode Zen free lane forwards "max" verbatim). The capitalized
   // id is the paid Ray-LLM V4.1 engine, so the flag belongs here.
   "DeepSeek-V4.1-Flash": { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingEffortInChatTemplateKwargs: true, contextWindow: 1000000, maxOutput: 384000 },
+  // Same V4.1 Ray-LLM engine served under a dated-build suffix (e.g. the acme
+  // cluster's "deepseek-ai/DeepSeek-V4.1-Flash-1017"). baseModel is case-sensitive
+  // here, and a glob can't target the suffix alone — *deepseek-v4.* must stay
+  // flag-free because the OpenCode Zen free lane deepseek-v4.1-flash-free matches
+  // it and forwards "max" verbatim. So the dated build needs its own exact entry.
+  "DeepSeek-V4.1-Flash-1017": { vision: true, reasoning: true, thinkingFormat: "deepseek", thinkingEffortInChatTemplateKwargs: true, contextWindow: 1000000, maxOutput: 384000 },
   "deepseek-flash":      { vision: true, reasoning: true, thinkingFormat: "deepseek", contextWindow: 128000, maxOutput: 64000 },
 
   // Qwen plain coder/text (no vision) — registry "vision-model" / "coder-model" aliases
