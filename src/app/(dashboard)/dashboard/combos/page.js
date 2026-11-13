@@ -61,6 +61,7 @@ const STRATEGY_OPTIONS = [
   { value: "jev", label: "Jev — classify per request" },
   { value: "laya", label: "Laya — local classifier" },
   { value: "clef", label: "Clef — local decision model" },
+  { value: "sentryforge", label: "Sentryforge — Clef code/non-code split" },
 ];
 
 function getPolicyBadgeLabel(strategy = {}) {

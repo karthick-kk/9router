@@ -16,7 +16,7 @@ import { getTransform as getPxpipeTransform } from "@/lib/pxpipe/loader.js";
 import { appendPxpipeEvent } from "@/lib/pxpipe/events.js";
 import { errorResponse, unavailableResponse } from "open-sse/utils/error.js";
 import { upstreamResponseHeaders } from "open-sse/utils/upstreamHeaders.js";
-import { handleComboChat, handleFusionChat, handleCompositeStageChat, detectRequiredCapabilities, orderModelsByJev, extractTurn } from "open-sse/services/combo.js";
+import { handleComboChat, handleFusionChat, handleCompositeStageChat, detectRequiredCapabilities, orderModelsByJev, orderModelsBySentryforge, extractTurn } from "open-sse/services/combo.js";
 import { getRoutingState } from "open-sse/services/combo/session-state.js";
 import { recordDecision, backfillOutcome } from "@/lib/db/repos/routingDecisionsRepo.js";
 import { augmentModelsWithCapacityAdapter, withCapacityAdapterStripping, getActiveAdapterStrategy } from "open-sse/services/capacityAdapter.js";
@@ -41,10 +41,12 @@ import { resolveSmartChoice } from "../services/systemoneRouter.js";
 // upstream themselves (the sidecar / the acme-proxy injects credentials), so
 // neither needs a 9router key — a dummy value just satisfies the fail-open
 // guard in orderModelsByJev without implying a real credential.
-const CLASSIFIER_STRATEGIES = new Set(["jev", "laya", "clef"]);
+// "sentryforge" is a sibling strategy in the same family: it reuses CLEF but
+// adds its own code/non-code guard so it is NOT run through orderModelsByJev.
+const CLASSIFIER_STRATEGIES = new Set(["jev", "laya", "clef", "sentryforge"]);
 function classifierCfg(strategy, settings, comboStrategies, modelStr) {
   const isLaya = strategy === "laya";
-  const isClef = strategy === "clef";
+  const isClef = strategy === "clef" || strategy === "sentryforge";
   return {
     apiKey: isLaya ? "laya-local" : isClef ? "clef-local" : settings.jevApiKey,
     url: isLaya ? settings.layaUrl : isClef ? settings.clefUrl : settings.jevUrl,
@@ -55,8 +57,33 @@ function classifierCfg(strategy, settings, comboStrategies, modelStr) {
     model: isClef ? settings.clefModel : undefined,
     mode: comboStrategies[modelStr]?.jevMode,
     lowConfidence: comboStrategies[modelStr]?.jevLowConfidence,
+    codeConfidenceGate: comboStrategies[modelStr]?.sentryforgeCodeConfidenceGate,
     source: isLaya ? "laya" : isClef ? "clef" : "jev",
   };
+}
+
+// Run the per-request classifier for a combo strategy that classifies. "jev",
+// "laya", and "clef" share orderModelsByJev; "sentryforge" needs its own
+// code/non-code guard, so it is dispatched to orderModelsBySentryforge with the
+// same CLEF endpoint config (source is normalized to "clef" for both).
+async function classifyComboModels({ comboStrategy, body, modelStr, models, comboStrategies, settings, log, sid, turn, requiredCapabilities, onDecision }) {
+  const cfg = classifierCfg(comboStrategy, settings, comboStrategies, modelStr);
+  if (comboStrategy === "sentryforge") {
+    return (await orderModelsBySentryforge({
+      body, models, cfg, log, comboName: modelStr, sessionId: sid, turn, requiredCapabilities, onDecision,
+    })) || models;
+  }
+  return (await orderModelsByJev({
+    body, models,
+    rubrics: comboStrategies[modelStr]?.jevRubrics,
+    cfg,
+    log,
+    comboName: modelStr,
+    sessionId: sid,
+    turn,
+    requiredCapabilities,
+    onDecision,
+  })) || models;
 }
 
 /**
@@ -204,6 +231,11 @@ export async function handleChat(request, clientRawRequest = null) {
     const comboStrategies = settings.comboStrategies || {};
     const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
     const comboStrategy = comboSpecificStrategy || settings.comboStrategy || "fallback";
+    // Attribute usage to this combo. saveUsageStats records combo/comboStrategy
+    // from clientRawRequest, and before this only composite-stage stamped them,
+    // so every other strategy (sentryforge included) wrote meta=null and its
+    // traffic was invisible to the routing-overview cost queries.
+    if (clientRawRequest) clientRawRequest = { ...clientRawRequest, combo: modelStr, comboStrategy };
     // Per-request decision holder: the Jev capture (below) fills it, and the
     // onServed hook (Task 4) backfills it after the response.
     const decision = { id: null };
@@ -215,14 +247,15 @@ export async function handleChat(request, clientRawRequest = null) {
     if (st && !continuation && comboStrategy !== "composite-stage") st.turnCounter += 1;
     let routedModels = comboModels;
     if (CLASSIFIER_STRATEGIES.has(comboStrategy)) {
-      routedModels = (await orderModelsByJev({
+      routedModels = (await classifyComboModels({
+        comboStrategy,
         body,
+        modelStr,
         models: comboModels,
-        rubrics: comboStrategies[modelStr]?.jevRubrics,
-        cfg: classifierCfg(comboStrategy, settings, comboStrategies, modelStr),
+        comboStrategies,
+        settings,
         log,
-        comboName: modelStr,
-        sessionId: sid,
+        sid,
         turn: st ? st.turnCounter : 1,
         requiredCapabilities,
         onDecision: (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
@@ -351,6 +384,8 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       const comboStrategies = chatSettings.comboStrategies || {};
       const comboSpecificStrategy = comboStrategies[modelStr]?.fallbackStrategy;
       const comboStrategy = comboSpecificStrategy || chatSettings.comboStrategy || "fallback";
+      // Attribute usage to this combo, mirroring the top-level combo branch above.
+      if (clientRawRequest) clientRawRequest = { ...clientRawRequest, combo: modelStr, comboStrategy };
       const requiredCapabilities = detectRequiredCapabilities(body);
       // Nested combo (a combo member that is itself a combo): the access decision
       // was made on the outer target; only drop adapter models the key may not call.
@@ -366,15 +401,17 @@ async function handleSingleModelChat(body, modelStr, clientRawRequest = null, re
       if (st && !continuation && comboStrategy !== "composite-stage") st.turnCounter += 1;
       let routedModels = comboModels;
       if (CLASSIFIER_STRATEGIES.has(comboStrategy)) {
-        routedModels = (await orderModelsByJev({
+        routedModels = (await classifyComboModels({
+          comboStrategy,
           body,
+          modelStr,
           models: comboModels,
-          rubrics: comboStrategies[modelStr]?.jevRubrics,
-          cfg: classifierCfg(comboStrategy, chatSettings, comboStrategies, modelStr),
+          comboStrategies,
+          settings: chatSettings,
           log,
-          comboName: modelStr,
-          sessionId: sid,
+          sid,
           turn: st ? st.turnCounter : 1,
+          requiredCapabilities,
           onDecision: (rec) => { recordDecision(rec).then((id) => { decision.id = id; }); },
         })) || comboModels;
       }

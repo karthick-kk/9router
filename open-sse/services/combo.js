@@ -43,6 +43,7 @@ async function peekComboResponse(result, log) {
 // Jev classifier strategy lives in ./combo/ but is re-exported here so callers
 // keep importing every combo strategy from one module.
 export { orderModelsByJev, extractTurn } from "./combo/jev.js";
+export { orderModelsBySentryforge } from "./combo/sentryforge.js";
 
 // Hard capabilities = input modalities; missing one drops request data (e.g. image
 // stripped). Must be prioritized. Soft (e.g. search) only degrades a feature.

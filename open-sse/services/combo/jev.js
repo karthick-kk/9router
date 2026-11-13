@@ -184,7 +184,7 @@ function healthFactorFor(model, now) {
 }
 
 /** Sick models (factor < veto) moved to the tail; healthy ones keep their relative order. */
-function demoteSick(models, now) {
+export function demoteSick(models, now) {
   const sick = models.filter((m) => healthFactorFor(m, now) < HEALTH_VETO_THRESHOLD);
   if (sick.length === 0 || sick.length === models.length) return { order: models, sick };
   const sickSet = new Set(sick);
