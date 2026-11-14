@@ -26,7 +26,7 @@ import { orderModelsBySentryforge } from "../../open-sse/services/combo/sentryfo
 // A combo with one Kiro member and one Acme member.
 const MODELS = ["krb/auto", "acme/qwen"];
 const KIRO = "krb/auto";
-const ERIC = "acme/qwen";
+const ACME = "acme/qwen";
 
 function mkBody(prompt) {
   return { messages: [{ role: "user", content: prompt }] };
@@ -68,7 +68,7 @@ describe("sentryforge executable-file-write boundary", () => {
     );
     expect(decision.reason).toBe("code-kiro");
     expect(order[0]).toBe(KIRO);
-    expect(order).not.toContain(ERIC); // Kiro-only serve order
+    expect(order).not.toContain(ACME); // Kiro-only serve order
   });
 
   it("routes a fix-repo-files turn to Kiro (code-kiro)", async () => {
@@ -78,7 +78,7 @@ describe("sentryforge executable-file-write boundary", () => {
     );
     expect(decision.reason).toBe("code-kiro");
     expect(order[0]).toBe(KIRO);
-    expect(order).not.toContain(ERIC);
+    expect(order).not.toContain(ACME);
   });
 
   it("routes a refactor of repo source to Kiro (code-kiro)", async () => {
@@ -93,39 +93,39 @@ describe("sentryforge executable-file-write boundary", () => {
   it("routes an explanation (prose, no file write) to Acme (noncode-acme)", async () => {
     const { order, decision } = await route(
       "In a few sentences, explain how an LRU cache decides which entry to evict.",
-      { kind: { choice: "noncode", confidence: 0.93 }, route: { choice: ERIC, confidence: 0.9 } }
+      { kind: { choice: "noncode", confidence: 0.93 }, route: { choice: ACME, confidence: 0.9 } }
     );
     expect(decision.reason).toBe("noncode-acme");
-    expect(order[0]).toBe(ERIC);
+    expect(order[0]).toBe(ACME);
     expect(order).toContain(KIRO); // Kiro kept as tail
   });
 
   it("routes a markdown spec write (src/rate-limit-design.md) to Acme, even with code sketches", async () => {
     const { order, decision } = await route(
       "Write your rate-limiting design to src/rate-limit-design.md: the policy interface and how config.js supplies the selection. Keep it under 400 words; code sketches are fine.",
-      { kind: { choice: "noncode", confidence: 0.90 }, route: { choice: ERIC, confidence: 0.9 } }
+      { kind: { choice: "noncode", confidence: 0.90 }, route: { choice: ACME, confidence: 0.9 } }
     );
     expect(decision.reason).toBe("noncode-acme");
-    expect(order[0]).toBe(ERIC);
+    expect(order[0]).toBe(ACME);
   });
 
   it("keeps a confident noncode answer that contains illustrative snippets on Acme", async () => {
     const { order, decision } = await route(
       "Explain token refresh under concurrent callers. Show a short pseudocode single-flight guard inside the explanation.",
-      { kind: { choice: "noncode", confidence: 0.91 }, route: { choice: ERIC, confidence: 0.9 } }
+      { kind: { choice: "noncode", confidence: 0.91 }, route: { choice: ACME, confidence: 0.9 } }
     );
     expect(decision.reason).toBe("noncode-acme");
-    expect(order[0]).toBe(ERIC);
+    expect(order[0]).toBe(ACME);
   });
 
   it("fail-closes to Kiro when a noncode label is below the confidence gate", async () => {
     const { order, decision } = await route(
       "Explain how the rate limiter works at the window boundary.",
-      { kind: { choice: "noncode", confidence: 0.78 }, route: { choice: ERIC, confidence: 0.9 } }
+      { kind: { choice: "noncode", confidence: 0.78 }, route: { choice: ACME, confidence: 0.9 } }
     );
     expect(decision.reason).toBe("guard-low-confidence");
     expect(order[0]).toBe(KIRO);
-    expect(order).not.toContain(ERIC);
+    expect(order).not.toContain(ACME);
   });
 
   it("fail-closes to Kiro on classifier timeout", async () => {
@@ -149,7 +149,7 @@ describe("sentryforge executable-file-write boundary", () => {
       });
       expect(decisions[0].reason).toBe("timeout");
       expect(order[0]).toBe(KIRO);
-      expect(order).not.toContain(ERIC);
+      expect(order).not.toContain(ACME);
     } finally {
       globalThis.fetch = orig;
     }
@@ -160,10 +160,10 @@ describe("sentryforge executable-file-write boundary", () => {
     // ignore the pick and serve Kiro-only.
     const { order, decision } = await route(
       "Fix src/cache.js so npm test passes (LRU evicts the wrong entry).",
-      { kind: { choice: "code", confidence: 0.95 }, route: { choice: ERIC, confidence: 0.9 } }
+      { kind: { choice: "code", confidence: 0.95 }, route: { choice: ACME, confidence: 0.9 } }
     );
     expect(decision.reason).toBe("code-kiro");
     expect(order[0]).toBe(KIRO);
-    expect(order).not.toContain(ERIC);
+    expect(order).not.toContain(ACME);
   });
 });
